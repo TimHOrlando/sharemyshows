@@ -14,3 +14,4 @@ uploads/audio/*
 *.log
 migrations/
 cookies.txt
+app/routes/*_old.py

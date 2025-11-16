@@ -2,8 +2,12 @@ from flask import Flask, jsonify
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from flask_migrate import Migrate
+from flask_restx import Api
 from config.config import config
 from app.models import db
+from app.routes.auth_swagger import api as auth_ns
+
+
 import os
 
 def create_app(config_name=None):
@@ -37,8 +41,32 @@ def create_app(config_name=None):
     # Store socketio in app config for access in run.py
     app.socketio = socketio
     
-    # Register blueprints
-    from app.routes.auth import auth_bp
+    # Initialize Flask-RESTX for Swagger documentation
+    authorizations = {
+        'jwt': {
+            'type': 'apiKey',
+            'in': 'cookie',
+            'name': 'access_token_cookie',
+            'description': 'JWT token in HTTP-only cookie. Login via /api/auth/login first.'
+        }
+    }
+    
+    api_restx = Api(
+        app,
+        version='1.0',
+        title='ShareMyShows API',
+        description='Concert documentation platform with external API integrations',
+        doc='/api/docs',
+        authorizations=authorizations,
+        security='jwt'
+    )
+    
+    # Import and add Flask-RESTX namespace for external APIs
+    from app.routes.external_apis_swagger import api as external_ns
+    api_restx.add_namespace(external_ns, path='/api/external')
+    
+    # Register regular Flask blueprints (non-Swagger routes)
+    from app.routes.auth_swagger import api as auth_ns
     from app.routes.shows import shows_bp
     from app.routes.photos import photos_bp
     from app.routes.audio import audio_bp
@@ -47,9 +75,8 @@ def create_app(config_name=None):
     from app.routes.friends import friends_bp
     from app.routes.dashboard import dashboard_bp
     from app.routes.chat import chat_bp
-    from app.routes.external_apis import external_api
     
-    app.register_blueprint(auth_bp)
+    api_restx.add_namespace(auth_ns, path='/api/auth')
     app.register_blueprint(shows_bp)
     app.register_blueprint(photos_bp)
     app.register_blueprint(audio_bp)
@@ -58,7 +85,6 @@ def create_app(config_name=None):
     app.register_blueprint(friends_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(chat_bp)
-    app.register_blueprint(external_api)
     
     @app.route('/health')
     def health():
@@ -66,7 +92,12 @@ def create_app(config_name=None):
     
     @app.route('/')
     def index():
-        return jsonify({'name': 'ShareMyShows API', 'version': '1.0.0', 'status': 'running'}), 200
+        return jsonify({
+            'name': 'ShareMyShows API',
+            'version': '1.0.0',
+            'status': 'running',
+            'swagger_ui': 'http://localhost:5000/api/docs'
+        }), 200
     
     @jwt.expired_token_loader
     def expired_token_callback(jwt_header, jwt_payload):
