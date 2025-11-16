@@ -1,24 +1,26 @@
 """
 Enhanced Auth Routes with Email-Based MFA
-Fixed DNS timeout issue with eventlet
+Supports MFA during registration and enabling from profile settings
 """
-from flask import request, current_app
+from flask import request, render_template_string
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import (
     create_access_token, create_refresh_token, 
-    jwt_required, get_jwt_identity
+    jwt_required, get_jwt_identity,
+    set_access_cookies, set_refresh_cookies,
+    unset_jwt_cookies
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import random
 import string
-import socket
+from flask_mail import Mail, Message
 
 from app.models import db, User
 
 api = Namespace('auth', description='Authentication operations with email MFA')
 
-# Models (same as before)
+# Models
 user_model = api.model('User', {
     'id': fields.Integer(description='User ID'),
     'username': fields.String(description='Username'),
@@ -70,20 +72,31 @@ def generate_mfa_code():
 
 
 def send_mfa_email(email, code, username, action='login'):
-    """Send MFA verification email with increased timeout to avoid DNS issues"""
-    from flask_mail import Mail, Message
+    """Send MFA verification email with code and verification link"""
+    from flask import current_app
     
-    # Increase socket timeout to avoid DNS lookup timeout with eventlet
-    old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(30)  # 30 seconds instead of default
+    # Get base URL from config
+    base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:3000')
     
-    try:
-        base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:3000')
-        verify_link = f"{base_url}/verify-mfa?email={email}&code={code}"
+    # Create verification link that redirects to the MFA form
+    verify_link = f"{base_url}/verify-mfa?email={email}&code={code}"
+    
+    if action == 'registration':
+        subject = f"Welcome {username}! Verify your ShareMyShows account"
+        body_text = f"""
+Welcome to ShareMyShows, {username}!
+
+Your verification code is: {code}
+
+Click the button below to verify your account, or enter the code manually:
+{verify_link}
+
+This code will expire in 10 minutes.
+
+If you didn't create this account, please ignore this email.
+"""
         
-        if action == 'registration':
-            subject = f"Welcome {username}! Verify your ShareMyShows account"
-            body_html = f"""
+        body_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -95,6 +108,7 @@ def send_mfa_email(email, code, username, action='login'):
         .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
         .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
         .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
+        .footer {{ text-align: center; color: #999; font-size: 12px; margin-top: 20px; }}
     </style>
 </head>
 <body>
@@ -104,23 +118,49 @@ def send_mfa_email(email, code, username, action='login'):
         </div>
         <div class="content">
             <h2>Hi {username},</h2>
-            <p>Thanks for joining ShareMyShows!</p>
+            <p>Thanks for joining ShareMyShows! We're excited to have you document and share your concert experiences.</p>
+            
+            <p>To complete your registration, please verify your email address using the code below:</p>
+            
             <div class="code-box">
                 <p style="margin: 0; font-size: 14px; color: #666;">Your Verification Code</p>
                 <div class="code">{code}</div>
             </div>
+            
             <center>
                 <a href="{verify_link}" class="button">Verify My Account</a>
             </center>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
+            
+            <p style="color: #666; font-size: 14px;">Or enter the code manually in the app. This code expires in 10 minutes.</p>
+            
+            <p style="margin-top: 30px;">If you didn't create this account, you can safely ignore this email.</p>
+        </div>
+        <div class="footer">
+            <p>ShareMyShows - Document your concert experiences</p>
         </div>
     </div>
 </body>
 </html>
 """
-        elif action == 'enable_mfa':
-            subject = "Enable Multi-Factor Authentication - ShareMyShows"
-            body_html = f"""
+    
+    elif action == 'enable_mfa':
+        subject = "Enable Multi-Factor Authentication - ShareMyShows"
+        body_text = f"""
+Hi {username},
+
+You've requested to enable Multi-Factor Authentication (MFA) for your ShareMyShows account.
+
+Your verification code is: {code}
+
+Click the button below to complete MFA setup, or enter the code manually:
+{verify_link}
+
+This code will expire in 10 minutes.
+
+If you didn't request this, please contact support immediately.
+"""
+        
+        body_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -132,31 +172,57 @@ def send_mfa_email(email, code, username, action='login'):
         .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
         .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
         .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
+        .footer {{ text-align: center; color: #999; font-size: 12px; margin-top: 20px; }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔐 Enable MFA</h1>
+            <h1>🔐 Enable Multi-Factor Authentication</h1>
         </div>
         <div class="content">
             <h2>Hi {username},</h2>
+            <p>You've requested to enable Multi-Factor Authentication for your ShareMyShows account.</p>
+            
+            <p>Please use this code to complete the setup:</p>
+            
             <div class="code-box">
                 <p style="margin: 0; font-size: 14px; color: #666;">Your Verification Code</p>
                 <div class="code">{code}</div>
             </div>
+            
             <center>
                 <a href="{verify_link}" class="button">Complete MFA Setup</a>
             </center>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
+            
+            <p style="color: #666; font-size: 14px;">Or enter the code manually in your profile settings. This code expires in 10 minutes.</p>
+            
+            <p style="margin-top: 30px; color: #e74c3c;"><strong>Important:</strong> If you didn't request this, please secure your account immediately.</p>
+        </div>
+        <div class="footer">
+            <p>ShareMyShows - Document your concert experiences</p>
         </div>
     </div>
 </body>
 </html>
 """
-        else:  # login
-            subject = "Your ShareMyShows Login Code"
-            body_html = f"""
+    
+    else:  # login
+        subject = "Your ShareMyShows Login Code"
+        body_text = f"""
+Hi {username},
+
+Your login verification code is: {code}
+
+Click the button below to complete your login, or enter the code manually:
+{verify_link}
+
+This code will expire in 10 minutes.
+
+If you didn't attempt to log in, please secure your account immediately.
+"""
+        
+        body_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -168,6 +234,7 @@ def send_mfa_email(email, code, username, action='login'):
         .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
         .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
         .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
+        .footer {{ text-align: center; color: #999; font-size: 12px; margin-top: 20px; }}
     </style>
 </head>
 <body>
@@ -177,40 +244,45 @@ def send_mfa_email(email, code, username, action='login'):
         </div>
         <div class="content">
             <h2>Hi {username},</h2>
+            <p>Someone (hopefully you!) is trying to log in to your ShareMyShows account.</p>
+            
+            <p>Use this code to complete your login:</p>
+            
             <div class="code-box">
                 <p style="margin: 0; font-size: 14px; color: #666;">Your Login Code</p>
                 <div class="code">{code}</div>
             </div>
+            
             <center>
                 <a href="{verify_link}" class="button">Complete Login</a>
             </center>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
+            
+            <p style="color: #666; font-size: 14px;">Or enter the code manually. This code expires in 10 minutes.</p>
+            
+            <p style="margin-top: 30px; color: #e74c3c;"><strong>Security Alert:</strong> If this wasn't you, someone may have your password. Please secure your account immediately.</p>
+        </div>
+        <div class="footer">
+            <p>ShareMyShows - Document your concert experiences</p>
         </div>
     </div>
 </body>
 </html>
 """
-        
+    
+    # Send email (requires Flask-Mail configuration)
+    try:
         mail = Mail(current_app)
         msg = Message(
             subject=subject,
             recipients=[email],
+            body=body_text,
             html=body_html
         )
-        
-        print(f"Sending MFA email to {email}...")
         mail.send(msg)
-        print(f"✅ Email sent successfully to {email}")
         return True
-        
     except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Failed to send email: {e}")
         return False
-    finally:
-        # Restore original timeout
-        socket.setdefaulttimeout(old_timeout)
 
 
 @api.route('/register')
@@ -223,6 +295,7 @@ class Register(Resource):
         """Register a new user with optional MFA"""
         data = request.get_json()
         
+        # Validate required fields
         username = data.get('username', '').strip()
         email = data.get('email', '').strip().lower()
         password = data.get('password', '')
@@ -237,29 +310,33 @@ class Register(Resource):
         if not password or len(password) < 8:
             return {'error': 'Password must be at least 8 characters'}, 400
         
+        # Check if user already exists
         if User.query.filter_by(username=username).first():
             return {'error': 'Username already exists'}, 400
         
         if User.query.filter_by(email=email).first():
             return {'error': 'Email already registered'}, 400
         
+        # Create user
         user = User(
             username=username,
             email=email,
             password_hash=generate_password_hash(password),
             mfa_enabled=enable_mfa,
-            email_verified=False
+            email_verified=False  # Will be verified via MFA code
         )
         
         db.session.add(user)
         db.session.commit()
         
+        # If MFA is enabled, generate code and send email
         if enable_mfa:
             mfa_code = generate_mfa_code()
             user.mfa_code = mfa_code
             user.mfa_code_expires = datetime.utcnow() + timedelta(minutes=10)
             db.session.commit()
             
+            # Send verification email
             send_mfa_email(email, mfa_code, username, action='registration')
             
             return {
@@ -268,6 +345,7 @@ class Register(Resource):
                 'user': user.to_dict()
             }, 201
         else:
+            # No MFA - log them in directly
             user.email_verified = True
             db.session.commit()
             
@@ -303,12 +381,14 @@ class Login(Resource):
         if not user or not check_password_hash(user.password_hash, password):
             return {'error': 'Invalid email or password'}, 401
         
+        # If MFA is enabled, send code and require verification
         if user.mfa_enabled:
             mfa_code = generate_mfa_code()
             user.mfa_code = mfa_code
             user.mfa_code_expires = datetime.utcnow() + timedelta(minutes=10)
             db.session.commit()
             
+            # Send login code email
             send_mfa_email(email, mfa_code, user.username, action='login')
             
             return {
@@ -317,6 +397,7 @@ class Login(Resource):
                 'user': user.to_dict()
             }, 200
         else:
+            # No MFA - log them in directly
             access_token = create_access_token(identity=str(user.id))
             refresh_token = create_refresh_token(identity=str(user.id))
             
@@ -349,17 +430,20 @@ class VerifyMFA(Resource):
         if not user:
             return {'error': 'User not found'}, 404
         
+        # Check if code matches and hasn't expired
         if user.mfa_code != code:
             return {'error': 'Invalid verification code'}, 400
         
         if user.mfa_code_expires < datetime.utcnow():
-            return {'error': 'Verification code has expired'}, 400
+            return {'error': 'Verification code has expired. Please request a new one.'}, 400
         
+        # Code is valid - clear it and verify email
         user.mfa_code = None
         user.mfa_code_expires = None
         user.email_verified = True
         db.session.commit()
         
+        # Create tokens and log user in
         access_token = create_access_token(identity=str(user.id))
         refresh_token = create_refresh_token(identity=str(user.id))
         
@@ -367,7 +451,97 @@ class VerifyMFA(Resource):
             'access_token': access_token,
             'refresh_token': refresh_token,
             'user': user.to_dict(),
-            'message': 'Verification successful!'
+            'message': 'Verification successful! Welcome to ShareMyShows.'
+        }, 200
+
+
+@api.route('/profile/mfa')
+class ProfileMFA(Resource):
+    @api.doc('toggle_mfa', security='jwt')
+    @api.expect(enable_mfa_model)
+    @api.response(200, 'MFA status updated', message_response)
+    @api.response(401, 'Unauthorized', error_response)
+    @jwt_required()
+    def post(self):
+        """Enable or disable MFA from profile settings"""
+        current_user_id = get_jwt_identity()
+        user = User.query.get(int(current_user_id))
+        
+        if not user:
+            return {'error': 'User not found'}, 404
+        
+        data = request.get_json()
+        enable = data.get('enable', False)
+        
+        if enable and not user.mfa_enabled:
+            # Enabling MFA - send verification code
+            mfa_code = generate_mfa_code()
+            user.mfa_code = mfa_code
+            user.mfa_code_expires = datetime.utcnow() + timedelta(minutes=10)
+            db.session.commit()
+            
+            # Send MFA setup email
+            send_mfa_email(user.email, mfa_code, user.username, action='enable_mfa')
+            
+            return {
+                'message': 'Verification code sent to your email. Please verify to enable MFA.',
+                'mfa_required': True
+            }, 200
+            
+        elif not enable and user.mfa_enabled:
+            # Disabling MFA - no verification needed
+            user.mfa_enabled = False
+            user.mfa_code = None
+            user.mfa_code_expires = None
+            db.session.commit()
+            
+            return {
+                'message': 'MFA has been disabled for your account.'
+            }, 200
+        else:
+            return {
+                'message': f'MFA is already {"enabled" if enable else "disabled"}'
+            }, 200
+
+
+@api.route('/profile/mfa/verify')
+class ProfileMFAVerify(Resource):
+    @api.doc('verify_mfa_enable', security='jwt')
+    @api.expect(api.model('VerifyMFACode', {
+        'code': fields.String(required=True, description='6-digit verification code')
+    }))
+    @api.response(200, 'MFA enabled successfully', message_response)
+    @jwt_required()
+    def post(self):
+        """Verify code to complete MFA enablement from profile settings"""
+        current_user_id = get_jwt_identity()
+        user = User.query.get(int(current_user_id))
+        
+        if not user:
+            return {'error': 'User not found'}, 404
+        
+        data = request.get_json()
+        code = data.get('code', '').strip()
+        
+        if not code:
+            return {'error': 'Verification code required'}, 400
+        
+        # Check if code matches and hasn't expired
+        if user.mfa_code != code:
+            return {'error': 'Invalid verification code'}, 400
+        
+        if user.mfa_code_expires < datetime.utcnow():
+            return {'error': 'Verification code has expired. Please request a new one.'}, 400
+        
+        # Code is valid - enable MFA and clear code
+        user.mfa_enabled = True
+        user.mfa_code = None
+        user.mfa_code_expires = None
+        db.session.commit()
+        
+        return {
+            'message': 'MFA has been successfully enabled! You will be logged out now. Please log in again with MFA.',
+            'logout_required': True
         }, 200
 
 

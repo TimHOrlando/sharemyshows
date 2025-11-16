@@ -19,6 +19,8 @@ class User(db.Model):
     mfa_method = db.Column(db.String(20))
     mfa_secret = db.Column(db.String(32))
     phone_number = db.Column(db.String(20))
+    mfa_code = db.Column(db.String(6))  # Add this
+    mfa_code_expires = db.Column(db.DateTime)  # Add this
     
     # Email verification
     email_verified = db.Column(db.Boolean, default=False)
