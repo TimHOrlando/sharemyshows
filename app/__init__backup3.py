@@ -17,9 +17,6 @@ jwt = JWTManager()
 migrate = Migrate()
 socketio = SocketIO()
 
-# Export socketio for use in run.py
-__all__ = ['create_app', 'socketio', 'db']
-
 def create_app(config_name='development'):
     """Application factory pattern"""
     app = Flask(__name__)

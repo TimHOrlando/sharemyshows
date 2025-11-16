@@ -1,30 +1,42 @@
-#!/usr/bin/env python3
 """
-ShareMyShows Backend - Main Entry Point with WebSocket Support
+ShareMyShows Backend Server
+Runs Flask app with SocketIO support
 """
-# Load environment variables FIRST before any other imports
-from dotenv import load_dotenv
-import os
-load_dotenv()
+import eventlet
+eventlet.monkey_patch()
 
-# Now import the app
-from app import create_app
-from app.models import db
+from app import create_app, socketio
 
+# Create the Flask app
 app = create_app()
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
+    # Get configuration
+    host = app.config.get('HOST', '0.0.0.0')
+    port = app.config.get('PORT', 5000)
+    debug = app.config.get('DEBUG', True)
     
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('FLASK_ENV', 'development') == 'development'
+    print(f"""
+    ╔════════════════════════════════════════════════════════════╗
+    ║                                                            ║
+    ║              ShareMyShows API Server                       ║
+    ║                                                            ║
+    ╚════════════════════════════════════════════════════════════╝
     
-    # Use socketio.run() instead of app.run() for WebSocket support
-    app.socketio.run(
+    🚀 Server starting...
+    📍 Address: http://{host}:{port}
+    📚 Swagger UI: http://{host}:{port}/api/docs
+    🔍 Health: http://{host}:{port}/health
+    
+    Press Ctrl+C to stop the server
+    """)
+    
+    # Run with SocketIO
+    socketio.run(
         app,
-        host='0.0.0.0',
+        host=host,
         port=port,
         debug=debug,
-        allow_unsafe_werkzeug=True  # Only for development
+        use_reloader=debug,
+        log_output=True
     )
