@@ -13,3 +13,4 @@ uploads/audio/*
 .idea/
 *.log
 migrations/
+cookies.txt
