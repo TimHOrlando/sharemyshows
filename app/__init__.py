@@ -30,6 +30,13 @@ def create_app(config_name=None):
     # Initialize Flask-Migrate
     migrate = Migrate(app, db)
     
+    # Initialize SocketIO
+    from app.socket_events import init_socketio
+    socketio = init_socketio(app)
+    
+    # Store socketio in app config for access in run.py
+    app.socketio = socketio
+    
     # Register blueprints
     from app.routes.auth import auth_bp
     from app.routes.shows import shows_bp
@@ -40,6 +47,7 @@ def create_app(config_name=None):
     from app.routes.friends import friends_bp
     from app.routes.dashboard import dashboard_bp
     from app.routes.chat import chat_bp
+    from app.routes.external_apis import external_api
     
     app.register_blueprint(auth_bp)
     app.register_blueprint(shows_bp)
@@ -50,6 +58,7 @@ def create_app(config_name=None):
     app.register_blueprint(friends_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(chat_bp)
+    app.register_blueprint(external_api)
     
     @app.route('/health')
     def health():

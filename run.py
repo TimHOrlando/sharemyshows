@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ShareMyShows Backend - Main Entry Point
+ShareMyShows Backend - Main Entry Point with WebSocket Support
 """
 # Load environment variables FIRST before any other imports
 from dotenv import load_dotenv
@@ -20,8 +20,11 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_ENV', 'development') == 'development'
     
-    app.run(
+    # Use socketio.run() instead of app.run() for WebSocket support
+    app.socketio.run(
+        app,
         host='0.0.0.0',
         port=port,
-        debug=debug
+        debug=debug,
+        allow_unsafe_werkzeug=True  # Only for development
     )
