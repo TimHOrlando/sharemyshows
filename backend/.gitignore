@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+venv/
+.env
+*.db
+*.sqlite
+*.sqlite3
+uploads/photos/*
+uploads/audio/*
+!uploads/photos/.gitkeep
+!uploads/audio/.gitkeep
+.vscode/
+.idea/
+*.log
+migrations/
+cookies.txt
+app/routes/*_old.py

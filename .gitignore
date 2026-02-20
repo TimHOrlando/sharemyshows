@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+venv_win/
+.venv/
+env/
+my_env/
+
+# Environment variables (secrets)
+.env
+.env.local
+.env.*.local
+
+# SQLite database
+instance/
+*.db
+*.sqlite3
+
+# Uploads (user media)
+backend/uploads/
+**/uploads/photos/
+**/uploads/thumbnails/
+**/uploads/audio/
+**/uploads/videos/
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+cookies.txt
+py_test.txt
+
+# Backup files
+*.backup
+*.backup2
+*backup3.py
+
+# SQL migration scripts (one-off)
+*.sql
+
+# Old config files
+config/config_old.py
