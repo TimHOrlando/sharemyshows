@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import random
 import string
 import socket
+import re
 
 from app.models import db, User
 
@@ -30,7 +31,7 @@ user_model = api.model('User', {
 register_model = api.model('Register', {
     'username': fields.String(required=True, description='Username', min_length=3),
     'email': fields.String(required=True, description='Email address'),
-    'password': fields.String(required=True, description='Password', min_length=8),
+    'password': fields.String(required=True, description='Password (12+ chars, upper, lower, special, no underscore)', min_length=12),
     'enable_mfa': fields.Boolean(required=False, default=False, description='Enable MFA during registration')
 })
 
@@ -54,12 +55,12 @@ request_password_reset_model = api.model('RequestPasswordReset', {
 
 reset_password_model = api.model('ResetPassword', {
     'token': fields.String(required=True, description='Password reset token'),
-    'password': fields.String(required=True, description='New password', min_length=8)
+    'password': fields.String(required=True, description='New password', min_length=12)
 })
 
 change_password_model = api.model('ChangePassword', {
     'current_password': fields.String(required=True, description='Current password'),
-    'new_password': fields.String(required=True, description='New password', min_length=8)
+    'new_password': fields.String(required=True, description='New password', min_length=12)
 })
 
 request_temp_password_model = api.model('RequestTempPassword', {
@@ -83,6 +84,76 @@ error_response = api.model('ErrorResponse', {
 })
 
 
+def validate_password(password):
+    """Validate password meets all requirements.
+    Returns (is_valid, error_message) tuple."""
+    if len(password) < 12:
+        return False, 'Password must be at least 12 characters'
+    if not re.search(r'[A-Z]', password):
+        return False, 'Password must contain at least 1 uppercase letter'
+    if not re.search(r'[a-z]', password):
+        return False, 'Password must contain at least 1 lowercase letter'
+    if '_' in password:
+        return False, 'Password must not contain underscores'
+    if not re.search(r'[^a-zA-Z0-9_]', password):
+        return False, 'Password must contain at least 1 special character (not underscore)'
+    return True, None
+
+
+THEME_COLORS = {
+    'forest':   {'bg': '#1b211a', 'card': '#232b22', 'card2': '#2d372c', 'text': '#ebd5ab', 'text2': '#8bae66', 'muted': '#628141', 'accent': '#8bae66', 'border': '#2d372c'},
+    'sage':     {'bg': '#1e2721', 'card': '#2d3830', 'card2': '#3d4a40', 'text': '#e8efe9', 'text2': '#a3b5a6', 'muted': '#7a8f7d', 'accent': '#9db99a', 'border': '#3d4a40'},
+    'dark':     {'bg': '#121212', 'card': '#181818', 'card2': '#282828', 'text': '#ffffff', 'text2': '#b3b3b3', 'muted': '#6a6a6a', 'accent': '#9333ea', 'border': '#282828'},
+    'light':    {'bg': '#ffffff', 'card': '#f5f5f5', 'card2': '#e5e5e5', 'text': '#121212', 'text2': '#535353', 'muted': '#9a9a9a', 'accent': '#628141', 'border': '#e5e5e5'},
+    'midnight': {'bg': '#0f172a', 'card': '#1e293b', 'card2': '#334155', 'text': '#f8fafc', 'text2': '#94a3b8', 'muted': '#64748b', 'accent': '#6366f1', 'border': '#334155'},
+    'concert':  {'bg': '#18181b', 'card': '#27272a', 'card2': '#3f3f46', 'text': '#fafafa', 'text2': '#a1a1aa', 'muted': '#71717a', 'accent': '#dc2626', 'border': '#3f3f46'},
+    'purple':   {'bg': '#1a1625', 'card': '#251f33', 'card2': '#352d47', 'text': '#f5f3ff', 'text2': '#c4b5fd', 'muted': '#8b5cf6', 'accent': '#a78bfa', 'border': '#352d47'},
+}
+
+
+def get_email_colors(user_id):
+    """Get theme colors for a user's email styling"""
+    try:
+        user = User.query.get(user_id)
+        theme = user.theme_preference if user and user.theme_preference else 'forest'
+    except Exception:
+        theme = 'forest'
+    return THEME_COLORS.get(theme, THEME_COLORS['forest'])
+
+
+def themed_email_html(colors, header_text, body_content):
+    """Generate a themed email HTML template"""
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 0; background-color: {colors['bg']}; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: {colors['accent']}; color: {colors['bg']}; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+        .header h1 {{ margin: 0; font-size: 24px; }}
+        .content {{ background: {colors['card']}; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid {colors['border']}; border-top: none; }}
+        .content h2 {{ color: {colors['text']}; margin-top: 0; }}
+        .content p {{ color: {colors['text2']}; }}
+        .code-box {{ background: {colors['card2']}; border: 2px dashed {colors['accent']}; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
+        .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: {colors['accent']}; }}
+        .code-label {{ margin: 0; font-size: 14px; color: {colors['muted']}; }}
+        .button {{ display: inline-block; background: {colors['accent']}; color: {colors['bg']}; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
+        .muted {{ color: {colors['muted']}; font-size: 14px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{header_text}</h1>
+        </div>
+        <div class="content">
+            {body_content}
+        </div>
+    </div>
+</body>
+</html>"""
+
+
 def generate_mfa_code():
     """Generate a 6-digit MFA code"""
     return ''.join(random.choices(string.digits, k=6))
@@ -93,200 +164,84 @@ def generate_reset_token():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=64))
 
 
-def send_mfa_email(email, code, username, action='login'):
+def send_mfa_email(email, code, username, action='login', user_id=None):
     """Send MFA verification email with increased timeout to avoid DNS issues"""
     from flask_mail import Mail, Message
-    
-    # Increase socket timeout to avoid DNS lookup timeout with eventlet
+
     old_timeout = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(30)  # 30 seconds instead of default
-    
+    socket.setdefaulttimeout(30)
+
     try:
+        colors = get_email_colors(user_id) if user_id else THEME_COLORS['forest']
         base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:3000')
         verify_link = f"{base_url}/verify-mfa?email={email}&code={code}"
-        
+
+        code_block = f"""
+            <div class="code-box">
+                <p class="code-label">Your Verification Code</p>
+                <div class="code">{code}</div>
+            </div>
+            <center><a href="{verify_link}" class="button" target="_self">{{button_text}}</a></center>
+            <p class="muted">This code expires in 10 minutes.</p>"""
+
         if action == 'registration':
             subject = f"Welcome {username}! Verify your ShareMyShows account"
-            body_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-        .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
-        .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
-        .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎸 Welcome to ShareMyShows!</h1>
-        </div>
-        <div class="content">
-            <h2>Hi {username},</h2>
+            body = f"""<h2>Hi {username},</h2>
             <p>Thanks for joining ShareMyShows!</p>
-            <div class="code-box">
-                <p style="margin: 0; font-size: 14px; color: #666;">Your Verification Code</p>
-                <div class="code">{code}</div>
-            </div>
-            <center>
-                <a href="{verify_link}" class="button" target="_self">Verify My Account</a>
-            </center>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
+            {code_block.format(button_text='Verify My Account')}"""
+            header = "Welcome to ShareMyShows!"
         elif action == 'enable_mfa':
             subject = "Enable Multi-Factor Authentication - ShareMyShows"
-            body_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-        .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
-        .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
-        .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔐 Enable MFA</h1>
-        </div>
-        <div class="content">
-            <h2>Hi {username},</h2>
-            <div class="code-box">
-                <p style="margin: 0; font-size: 14px; color: #666;">Your Verification Code</p>
-                <div class="code">{code}</div>
-            </div>
-            <center>
-                <a href="{verify_link}" class="button" target="_self">Complete MFA Setup</a>
-            </center>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
-        else:  # login
+            body = f"""<h2>Hi {username},</h2>
+            {code_block.format(button_text='Complete MFA Setup')}"""
+            header = "Enable MFA"
+        else:
             subject = "Your ShareMyShows Login Code"
-            body_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-        .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
-        .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
-        .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎸 Login to ShareMyShows</h1>
-        </div>
-        <div class="content">
-            <h2>Hi {username},</h2>
-            <div class="code-box">
-                <p style="margin: 0; font-size: 14px; color: #666;">Your Login Code</p>
-                <div class="code">{code}</div>
-            </div>
-            <center>
-                <a href="{verify_link}" class="button" target="_self">Complete Login</a>
-            </center>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
-        
+            body = f"""<h2>Hi {username},</h2>
+            {code_block.format(button_text='Complete Login')}"""
+            header = "Login to ShareMyShows"
+
+        body_html = themed_email_html(colors, header, body)
+
         mail = Mail(current_app)
-        msg = Message(
-            subject=subject,
-            recipients=[email],
-            html=body_html
-        )
-        
+        msg = Message(subject=subject, recipients=[email], html=body_html)
+
         print(f"Sending MFA email to {email}...")
         mail.send(msg)
         print(f"✅ Email sent successfully to {email}")
         return True
-        
+
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
         import traceback
         traceback.print_exc()
         return False
     finally:
-        # Restore original timeout
         socket.setdefaulttimeout(old_timeout)
 
 
-def send_password_reset_email(email, token, username):
+def send_password_reset_email(email, token, username, user_id=None):
     """Send password reset email"""
     from flask_mail import Mail, Message
 
-    # Increase socket timeout to avoid DNS lookup timeout with eventlet
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(30)
 
     try:
+        colors = get_email_colors(user_id) if user_id else THEME_COLORS['forest']
         base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:3000')
         reset_link = f"{base_url}/reset-password?token={token}"
 
-        subject = "Reset Your ShareMyShows Password"
-        body_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-        .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔐 Reset Your Password</h1>
-        </div>
-        <div class="content">
-            <h2>Hi {username},</h2>
+        body = f"""<h2>Hi {username},</h2>
             <p>We received a request to reset your ShareMyShows password. Click the button below to create a new password:</p>
-            <center>
-                <a href="{reset_link}" class="button" target="_self">Reset Password</a>
-            </center>
-            <p style="color: #666; font-size: 14px;">This link expires in 1 hour.</p>
-            <p style="color: #666; font-size: 14px;">If you didn't request this, you can safely ignore this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
+            <center><a href="{reset_link}" class="button" target="_self">Reset Password</a></center>
+            <p class="muted">This link expires in 1 hour.</p>
+            <p class="muted">If you didn't request this, you can safely ignore this email.</p>"""
+
+        body_html = themed_email_html(colors, "Reset Your Password", body)
 
         mail = Mail(current_app)
-        msg = Message(
-            subject=subject,
-            recipients=[email],
-            html=body_html
-        )
+        msg = Message(subject="Reset Your ShareMyShows Password", recipients=[email], html=body_html)
 
         print(f"Sending password reset email to {email}...")
         mail.send(msg)
@@ -299,60 +254,31 @@ def send_password_reset_email(email, token, username):
         traceback.print_exc()
         return False
     finally:
-        # Restore original timeout
         socket.setdefaulttimeout(old_timeout)
 
 
-def send_password_change_email(email, username):
+def send_password_change_email(email, username, user_id=None):
     """Send password change confirmation email"""
     from flask_mail import Mail, Message
 
-    # Increase socket timeout to avoid DNS lookup timeout with eventlet
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(30)
 
     try:
+        colors = get_email_colors(user_id) if user_id else THEME_COLORS['forest']
         base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:3000')
         login_link = f"{base_url}/login"
 
-        subject = "Your ShareMyShows Password Has Been Changed"
-        body_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-        .button {{ display: inline-block; background: #667eea; color: white; padding: 15px 40px; text-decoration: none; border-radius: 8px; margin: 20px 0; font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔐 Password Changed Successfully</h1>
-        </div>
-        <div class="content">
-            <h2>Hi {username},</h2>
+        body = f"""<h2>Hi {username},</h2>
             <p>Your ShareMyShows password has been successfully changed.</p>
             <p>You can now log in with your new password by clicking the button below:</p>
-            <center>
-                <a href="{login_link}" class="button" target="_self">Log In to ShareMyShows</a>
-            </center>
-            <p style="color: #666; font-size: 14px;">If you didn't make this change, please contact support immediately.</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
+            <center><a href="{login_link}" class="button" target="_self">Log In to ShareMyShows</a></center>
+            <p class="muted">If you didn't make this change, please contact support immediately.</p>"""
+
+        body_html = themed_email_html(colors, "Password Changed Successfully", body)
 
         mail = Mail(current_app)
-        msg = Message(
-            subject=subject,
-            recipients=[email],
-            html=body_html
-        )
+        msg = Message(subject="Your ShareMyShows Password Has Been Changed", recipients=[email], html=body_html)
 
         print(f"Sending password change confirmation email to {email}...")
         mail.send(msg)
@@ -365,60 +291,33 @@ def send_password_change_email(email, username):
         traceback.print_exc()
         return False
     finally:
-        # Restore original timeout
         socket.setdefaulttimeout(old_timeout)
 
 
-def send_temp_password_email(email, username, code):
+def send_temp_password_email(email, username, code, user_id=None):
     """Send temporary password email for password change"""
     from flask_mail import Mail, Message
 
-    # Increase socket timeout to avoid DNS lookup timeout with eventlet
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(30)
 
     try:
-        subject = "Your Temporary Password - ShareMyShows"
-        body_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
-        .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
-        .code-box {{ background: white; border: 2px dashed #667eea; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px; }}
-        .code {{ font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #667eea; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔑 Temporary Password</h1>
-        </div>
-        <div class="content">
-            <h2>Hi {username},</h2>
+        colors = get_email_colors(user_id) if user_id else THEME_COLORS['forest']
+
+        body = f"""<h2>Hi {username},</h2>
             <p>You requested a temporary password to change your ShareMyShows password.</p>
             <p>Use this code as your current password when changing your password:</p>
             <div class="code-box">
-                <p style="margin: 0; font-size: 14px; color: #666;">Your Temporary Password</p>
+                <p class="code-label">Your Temporary Password</p>
                 <div class="code">{code}</div>
             </div>
-            <p style="color: #666; font-size: 14px;">This code expires in 10 minutes.</p>
-            <p style="color: #666; font-size: 14px;">If you didn't request this, please ignore this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
+            <p class="muted">This code expires in 10 minutes.</p>
+            <p class="muted">If you didn't request this, please ignore this email.</p>"""
+
+        body_html = themed_email_html(colors, "Temporary Password", body)
 
         mail = Mail(current_app)
-        msg = Message(
-            subject=subject,
-            recipients=[email],
-            html=body_html
-        )
+        msg = Message(subject="Your Temporary Password - ShareMyShows", recipients=[email], html=body_html)
 
         print(f"Sending temporary password email to {email}...")
         mail.send(msg)
@@ -464,8 +363,11 @@ class Register(Resource):
         if not email or '@' not in email:
             return {'error': 'Valid email is required'}, 400
         
-        if not password or len(password) < 8:
-            return {'error': 'Password must be at least 8 characters'}, 400
+        if not password:
+            return {'error': 'Password is required'}, 400
+        is_valid, error_msg = validate_password(password)
+        if not is_valid:
+            return {'error': error_msg}, 400
         
         if User.query.filter_by(username=username).first():
             return {'error': 'Username already exists'}, 400
@@ -490,7 +392,7 @@ class Register(Resource):
             user.mfa_code_expires = datetime.utcnow() + timedelta(minutes=10)
             db.session.commit()
             
-            send_mfa_email(email, mfa_code, username, action='registration')
+            send_mfa_email(email, mfa_code, username, action='registration', user_id=user.id)
             
             return {
                 'message': 'Registration successful! Check your email for verification code.',
@@ -542,7 +444,7 @@ class Login(Resource):
             user.mfa_code_expires = datetime.utcnow() + timedelta(minutes=10)
             db.session.commit()
 
-            send_mfa_email(user.email, mfa_code, user.username, action='login')
+            send_mfa_email(user.email, mfa_code, user.username, action='login', user_id=user.id)
             
             return {
                 'message': 'MFA code sent to your email',
@@ -637,7 +539,7 @@ class ResendMFA(Resource):
         action = 'registration' if not user.email_verified else 'login'
 
         # Send email
-        send_mfa_email(user.email, mfa_code, user.username, action=action)
+        send_mfa_email(user.email, mfa_code, user.username, action=action, user_id=user.id)
 
         return {'message': 'Verification code has been resent to your email'}, 200
 
@@ -696,7 +598,7 @@ class RequestPasswordReset(Resource):
         db.session.commit()
 
         # Send reset email
-        send_password_reset_email(user.email, reset_token, user.username)
+        send_password_reset_email(user.email, reset_token, user.username, user_id=user.id)
 
         return {'message': 'If that email exists, a password reset link has been sent'}, 200
 
@@ -717,8 +619,9 @@ class ResetPassword(Resource):
         if not token or not password:
             return {'error': 'Token and password are required'}, 400
 
-        if len(password) < 8:
-            return {'error': 'Password must be at least 8 characters'}, 400
+        is_valid, error_msg = validate_password(password)
+        if not is_valid:
+            return {'error': error_msg}, 400
 
         user = User.query.filter_by(reset_token=token).first()
 
@@ -760,8 +663,9 @@ class ChangePassword(Resource):
         if not current_password or not new_password:
             return {'error': 'Current password and new password are required'}, 400
 
-        if len(new_password) < 8:
-            return {'error': 'New password must be at least 8 characters'}, 400
+        is_valid, error_msg = validate_password(new_password)
+        if not is_valid:
+            return {'error': error_msg}, 400
 
         # Verify current password or temporary code
         is_temp_code = False
@@ -787,7 +691,7 @@ class ChangePassword(Resource):
         db.session.commit()
 
         # Send confirmation email
-        send_password_change_email(user.email, user.username)
+        send_password_change_email(user.email, user.username, user_id=user.id)
 
         return {'message': 'Password changed successfully! Please log in with your new password.'}, 200
 
@@ -828,7 +732,7 @@ class RequestTempPassword(Resource):
 
         # Send code via selected method
         if delivery_method == 'email':
-            success = send_temp_password_email(user.email, user.username, temp_code)
+            success = send_temp_password_email(user.email, user.username, temp_code, user_id=user.id)
             if success:
                 return {'message': 'Temporary password sent to your email. Please check your inbox.'}, 200
             else:
@@ -866,7 +770,7 @@ class ProfileMFA(Resource):
             user.mfa_code_expires = datetime.utcnow() + timedelta(minutes=10)
             db.session.commit()
 
-            send_mfa_email(user.email, mfa_code, user.username, action='enable_mfa')
+            send_mfa_email(user.email, mfa_code, user.username, action='enable_mfa', user_id=user.id)
 
             return {
                 'message': 'MFA verification code sent to your email. Please verify to enable MFA.',
@@ -923,3 +827,26 @@ class ProfileVerifyMFA(Resource):
         db.session.commit()
 
         return {'message': 'MFA has been enabled successfully for your account!'}, 200
+
+
+@api.route('/profile/theme')
+class UserTheme(Resource):
+    @api.doc('update_theme', security='jwt')
+    @api.response(200, 'Theme updated', message_response)
+    @jwt_required()
+    def put(self):
+        """Update user's theme preference"""
+        current_user_id = int(get_jwt_identity())
+        user = User.query.get(current_user_id)
+        if not user:
+            return {'error': 'User not found'}, 404
+
+        data = request.get_json()
+        theme = data.get('theme', 'forest')
+        valid_themes = ['forest', 'sage', 'dark', 'light', 'midnight', 'concert', 'purple', 'custom']
+        if theme not in valid_themes:
+            theme = 'forest'
+
+        user.theme_preference = theme
+        db.session.commit()
+        return {'message': 'Theme updated'}

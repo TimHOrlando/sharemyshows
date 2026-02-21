@@ -4,15 +4,17 @@ Handles user statistics and recent activity feeds
 """
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from sqlalchemy import func
+from sqlalchemy import func, text
 import requests
 import time
 import re
+import threading
 
 from app.models import (
     db, Show, Artist, Venue, Photo, AudioRecording,
     VideoRecording, Comment, User
 )
+from app import cache
 
 MUSICBRAINZ_BASE_URL = 'https://musicbrainz.org/ws/2'
 MUSICBRAINZ_HEADERS = {
@@ -82,6 +84,18 @@ def fetch_artist_description(mbid):
 
     except Exception:
         return None
+
+def _backfill_artist_descriptions(artist_ids_with_mbids, app):
+    """Background thread: fetch and save artist descriptions without blocking requests."""
+    with app.app_context():
+        for artist_id, mbid in artist_ids_with_mbids:
+            desc = fetch_artist_description(mbid)
+            if desc:
+                artist = Artist.query.get(artist_id)
+                if artist:
+                    artist.disambiguation = desc
+        db.session.commit()
+
 
 # Create namespace
 api = Namespace('dashboard', description='Dashboard statistics and recent activity')
@@ -181,33 +195,35 @@ class DashboardStats(Resource):
     def get(self):
         """Get user statistics overview"""
         current_user_id = int(get_jwt_identity())
-        
-        # Count user's shows
-        total_shows = Show.query.filter_by(user_id=current_user_id).count()
-        
-        # Count unique artists
-        total_artists = db.session.query(func.count(func.distinct(Show.artist_id)))\
-            .filter(Show.user_id == current_user_id).scalar() or 0
-        
-        # Count unique venues
-        total_venues = db.session.query(func.count(func.distinct(Show.venue_id)))\
-            .filter(Show.user_id == current_user_id).scalar() or 0
-        
-        # Count media
-        total_photos = Photo.query.filter_by(user_id=current_user_id).count()
-        total_audio = AudioRecording.query.filter_by(user_id=current_user_id).count()
-        total_videos = VideoRecording.query.filter_by(user_id=current_user_id).count()
-        total_comments = Comment.query.filter_by(user_id=current_user_id).count()
-        
-        return {
-            'total_shows': total_shows,
-            'total_artists': total_artists,
-            'total_venues': total_venues,
-            'total_photos': total_photos,
-            'total_audio': total_audio,
-            'total_videos': total_videos,
-            'total_comments': total_comments
+
+        cache_key = f'dashboard_stats_{current_user_id}'
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        # Single query instead of 7 separate COUNT queries
+        row = db.session.execute(text("""
+            SELECT
+                (SELECT COUNT(*) FROM shows WHERE user_id = :uid) as total_shows,
+                (SELECT COUNT(DISTINCT artist_id) FROM shows WHERE user_id = :uid) as total_artists,
+                (SELECT COUNT(DISTINCT venue_id) FROM shows WHERE user_id = :uid) as total_venues,
+                (SELECT COUNT(*) FROM photos WHERE user_id = :uid) as total_photos,
+                (SELECT COUNT(*) FROM audio_recordings WHERE user_id = :uid) as total_audio,
+                (SELECT COUNT(*) FROM video_recordings WHERE user_id = :uid) as total_videos,
+                (SELECT COUNT(*) FROM comments WHERE user_id = :uid) as total_comments
+        """), {'uid': current_user_id}).fetchone()
+
+        result = {
+            'total_shows': row[0],
+            'total_artists': row[1],
+            'total_venues': row[2],
+            'total_photos': row[3],
+            'total_audio': row[4],
+            'total_videos': row[5],
+            'total_comments': row[6]
         }
+        cache.set(cache_key, result, timeout=120)
+        return result
 
 
 @api.route('/artists')
@@ -218,6 +234,11 @@ class DashboardArtists(Resource):
     def get(self):
         """Get user's top artists by show count"""
         current_user_id = int(get_jwt_identity())
+
+        cache_key = f'dashboard_artists_{current_user_id}'
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
 
         # Get artists with show counts
         artist_stats = db.session.query(
@@ -232,29 +253,16 @@ class DashboardArtists(Resource):
          .order_by(func.count(Show.id).desc())\
          .all()
 
-        # Lazily backfill descriptions from MusicBrainz/Wikipedia (up to 3 per request)
-        backfill_count = 0
-        for artist_id, artist_name, mbid, description, show_count in artist_stats:
-            if mbid and not description and backfill_count < 3:
-                desc = fetch_artist_description(mbid)
-                if desc:
-                    artist = Artist.query.get(artist_id)
-                    artist.disambiguation = desc
-                    backfill_count += 1
-        if backfill_count > 0:
-            db.session.commit()
-            # Re-query to get updated descriptions
-            artist_stats = db.session.query(
-                Artist.id,
-                Artist.name,
-                Artist.mbid,
-                Artist.disambiguation,
-                func.count(Show.id).label('show_count')
-            ).join(Show, Show.artist_id == Artist.id)\
-             .filter(Show.user_id == current_user_id)\
-             .group_by(Artist.id, Artist.name, Artist.mbid, Artist.disambiguation)\
-             .order_by(func.count(Show.id).desc())\
-             .all()
+        # Fire-and-forget backfill in background thread (no longer blocks response)
+        to_backfill = [(aid, mbid) for aid, name, mbid, desc, count in artist_stats if mbid and not desc]
+        if to_backfill[:3]:
+            from flask import current_app
+            app = current_app._get_current_object()
+            threading.Thread(
+                target=_backfill_artist_descriptions,
+                args=(to_backfill[:3], app),
+                daemon=True
+            ).start()
 
         results = [{
             'artist_id': artist_id,
@@ -263,10 +271,12 @@ class DashboardArtists(Resource):
             'description': description or ''
         } for artist_id, artist_name, mbid, description, show_count in artist_stats]
 
-        return {
+        result = {
             'artists': results,
             'total': len(results)
         }
+        cache.set(cache_key, result, timeout=120)
+        return result
 
 
 @api.route('/venues')
@@ -277,7 +287,12 @@ class DashboardVenues(Resource):
     def get(self):
         """Get user's top venues by show count"""
         current_user_id = int(get_jwt_identity())
-        
+
+        cache_key = f'dashboard_venues_{current_user_id}'
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
         # Get venues with show counts
         venue_stats = db.session.query(
             Venue.id,
@@ -289,17 +304,19 @@ class DashboardVenues(Resource):
          .order_by(func.count(Show.id).desc())\
          .limit(10)\
          .all()
-        
+
         results = [{
             'venue_id': venue_id,
             'venue_name': venue_name,
             'show_count': show_count
         } for venue_id, venue_name, show_count in venue_stats]
-        
-        return {
+
+        result = {
             'venues': results,
             'total': len(results)
         }
+        cache.set(cache_key, result, timeout=120)
+        return result
 
 
 @api.route('/photos/recent')

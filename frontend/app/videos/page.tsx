@@ -7,12 +7,15 @@ import Navbar from '@/components/Navbar';
 import SettingsModal from '@/components/SettingsModal';
 import { api } from '@/lib/api';
 
-interface Photo {
+interface Video {
   id: number;
   show_id: number;
-  caption?: string;
-  filename: string;
+  title?: string;
+  original_filename?: string;
+  duration?: number;
+  file_size?: number;
   created_at: string;
+  url: string;
   artist_name?: string;
   venue_name?: string;
   show_date?: string;
@@ -23,10 +26,10 @@ interface ShowGroup {
   artist_name: string;
   venue_name: string;
   show_date: string;
-  photos: Photo[];
+  videos: Video[];
 }
 
-export default function PhotosPage() {
+export default function VideosPage() {
   const router = useRouter();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [groups, setGroups] = useState<ShowGroup[]>([]);
@@ -34,32 +37,31 @@ export default function PhotosPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchPhotos();
+    fetchVideos();
   }, []);
 
-  const fetchPhotos = async () => {
+  const fetchVideos = async () => {
     try {
-      const response = await api.get('/photos');
-      const photos: Photo[] = response.data.photos || response.data || [];
-      setTotalCount(photos.length);
+      const response = await api.get('/videos');
+      const videos: Video[] = response.data.recordings || response.data || [];
+      setTotalCount(videos.length);
 
-      // Group by show_id
       const map = new Map<number, ShowGroup>();
-      for (const photo of photos) {
-        if (!map.has(photo.show_id)) {
-          map.set(photo.show_id, {
-            show_id: photo.show_id,
-            artist_name: photo.artist_name || 'Unknown Artist',
-            venue_name: photo.venue_name || 'Unknown Venue',
-            show_date: photo.show_date || '',
-            photos: [],
+      for (const video of videos) {
+        if (!map.has(video.show_id)) {
+          map.set(video.show_id, {
+            show_id: video.show_id,
+            artist_name: video.artist_name || 'Unknown Artist',
+            venue_name: video.venue_name || 'Unknown Venue',
+            show_date: video.show_date || '',
+            videos: [],
           });
         }
-        map.get(photo.show_id)!.photos.push(photo);
+        map.get(video.show_id)!.videos.push(video);
       }
       setGroups(Array.from(map.values()));
     } catch (error) {
-      console.error('Failed to fetch photos:', error);
+      console.error('Failed to fetch videos:', error);
     } finally {
       setLoading(false);
     }
@@ -69,6 +71,12 @@ export default function PhotosPage() {
     if (!dateString) return '';
     const date = new Date(dateString + 'T12:00:00');
     return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  const formatDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
   return (
@@ -88,8 +96,8 @@ export default function PhotosPage() {
               </svg>
               Back
             </button>
-            <h1 className="text-3xl font-bold text-primary">My Photos</h1>
-            <p className="text-secondary mt-2">{totalCount} photos across {groups.length} shows</p>
+            <h1 className="text-3xl font-bold text-primary">My Videos</h1>
+            <p className="text-secondary mt-2">{totalCount} videos across {groups.length} shows</p>
           </div>
 
           {/* Content */}
@@ -98,9 +106,9 @@ export default function PhotosPage() {
               {[...Array(3)].map((_, i) => (
                 <div key={i} className="bg-secondary rounded-xl p-4 animate-pulse">
                   <div className="h-5 bg-tertiary rounded w-1/3 mb-4"></div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {[...Array(4)].map((_, j) => (
-                      <div key={j} className="aspect-square bg-tertiary rounded-lg"></div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {[...Array(2)].map((_, j) => (
+                      <div key={j} className="aspect-video bg-tertiary rounded-lg"></div>
                     ))}
                   </div>
                 </div>
@@ -117,42 +125,40 @@ export default function PhotosPage() {
                   >
                     <div>
                       <p className="font-semibold text-primary">{group.artist_name} at {group.venue_name}</p>
-                      <p className="text-sm text-muted mt-0.5">{formatDate(group.show_date)} &middot; {group.photos.length} photo{group.photos.length !== 1 ? 's' : ''}</p>
+                      <p className="text-sm text-muted mt-0.5">{formatDate(group.show_date)} &middot; {group.videos.length} video{group.videos.length !== 1 ? 's' : ''}</p>
                     </div>
                     <svg className="w-5 h-5 text-muted flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </button>
 
-                  {/* Photo grid */}
+                  {/* Video grid */}
                   <div className="p-4">
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                      {group.photos.map((photo) => (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {group.videos.map((video) => (
                         <button
-                          key={photo.id}
-                          onClick={() => router.push(`/shows/${photo.show_id}`)}
-                          className="aspect-square bg-tertiary rounded-lg overflow-hidden hover:opacity-80 transition-all hover:scale-[1.02] active:scale-[0.98] relative group"
+                          key={video.id}
+                          onClick={() => router.push(`/shows/${video.show_id}`)}
+                          className="bg-tertiary rounded-lg overflow-hidden hover:ring-2 hover:ring-accent/50 transition-all text-left group"
                         >
-                          <img
-                            src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/photos/${photo.id}/thumbnail`}
-                            alt={photo.caption || 'Photo'}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              target.style.display = 'none';
-                              target.parentElement!.querySelector('.photo-fallback')?.classList.remove('hidden');
-                            }}
-                          />
-                          <div className="photo-fallback hidden w-full h-full flex items-center justify-center bg-tertiary absolute inset-0">
-                            <svg className="w-8 h-8 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          <div className="aspect-video bg-black relative flex items-center justify-center">
+                            <svg className="w-14 h-14 text-white/40 group-hover:text-white/70 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M8 5v14l11-7z" />
                             </svg>
+                            {video.duration && (
+                              <span className="absolute bottom-2 right-2 bg-black/70 text-white text-xs px-2 py-0.5 rounded">
+                                {formatDuration(video.duration)}
+                              </span>
+                            )}
                           </div>
-                          {photo.caption && (
-                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <p className="text-white text-xs truncate">{photo.caption}</p>
-                            </div>
-                          )}
+                          <div className="p-3">
+                            <p className="text-primary font-medium text-sm truncate">
+                              {video.title || video.original_filename || 'Untitled'}
+                            </p>
+                            {video.file_size && (
+                              <p className="text-muted text-xs mt-0.5">{(video.file_size / (1024 * 1024)).toFixed(1)} MB</p>
+                            )}
+                          </div>
                         </button>
                       ))}
                     </div>
@@ -163,11 +169,10 @@ export default function PhotosPage() {
           ) : (
             <div className="bg-secondary rounded-xl p-12 text-center">
               <svg className="w-16 h-16 text-muted mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
-              <h3 className="text-xl font-semibold text-primary mb-2">No photos yet</h3>
-              <p className="text-secondary mb-4">Start uploading photos from your shows.</p>
+              <h3 className="text-xl font-semibold text-primary mb-2">No videos yet</h3>
+              <p className="text-secondary mb-4">Record or upload videos from your shows.</p>
               <button
                 onClick={() => router.push('/shows')}
                 className="px-6 py-3 rounded-full font-semibold text-white transition-all hover:scale-105"

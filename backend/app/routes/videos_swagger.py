@@ -32,7 +32,7 @@ video_model = api.model('VideoRecording', {
     'description': fields.String(description='Description'),
     'duration': fields.Float(description='Duration in seconds'),
     'file_size': fields.Integer(description='File size in bytes'),
-    'uploaded_at': fields.DateTime(description='Upload time')
+    'created_at': fields.DateTime(description='Upload time')
 })
 
 video_list_model = api.model('VideoList', {
@@ -62,6 +62,30 @@ def allowed_video_file(filename):
 
 @api.route('')
 class VideoUpload(Resource):
+    @api.doc('list_user_videos', security='jwt')
+    @api.response(200, 'Success', video_list_model)
+    @jwt_required()
+    def get(self):
+        """Get all videos for the current user, with show info"""
+        current_user_id = int(get_jwt_identity())
+        results = db.session.query(VideoRecording, Show)\
+            .join(Show, VideoRecording.show_id == Show.id)\
+            .filter(VideoRecording.user_id == current_user_id)\
+            .order_by(Show.date.desc(), VideoRecording.created_at.desc()).all()
+
+        recordings = []
+        for video, show in results:
+            d = video.to_dict()
+            d['artist_name'] = show.artist.name if show.artist else 'Unknown Artist'
+            d['venue_name'] = show.venue.name if show.venue else 'Unknown Venue'
+            d['show_date'] = show.date.isoformat() if show.date else None
+            recordings.append(d)
+
+        return {
+            'recordings': recordings,
+            'total': len(recordings)
+        }
+
     @api.doc('upload_video', security='jwt')
     @api.expect(upload_parser)
     @api.response(201, 'Video uploaded', video_model)
@@ -111,9 +135,10 @@ class VideoUpload(Resource):
         video = VideoRecording(
             show_id=show_id,
             user_id=current_user_id,
-            filename=filename,
+            filename=unique_filename,
+            original_filename=file.filename,
             file_path=file_path,
-            title=title or filename,
+            title=title or file.filename,
             description=description,
             duration=duration,
             file_size=file_size
@@ -220,7 +245,7 @@ class ShowVideos(Resource):
         if not show:
             return {'error': 'Show not found'}, 404
         
-        recordings = VideoRecording.query.filter_by(show_id=show_id).order_by(VideoRecording.uploaded_at.desc()).all()
+        recordings = VideoRecording.query.filter_by(show_id=show_id).order_by(VideoRecording.created_at.desc()).all()
         
         return {
             'recordings': [video.to_dict() for video in recordings],

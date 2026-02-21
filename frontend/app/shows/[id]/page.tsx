@@ -30,6 +30,21 @@ interface Photo {
   created_at: string;
 }
 
+interface Video {
+  id: number;
+  user_id: number;
+  show_id: number;
+  filename: string;
+  original_filename?: string;
+  title?: string;
+  description?: string;
+  duration?: number;
+  file_size?: number;
+  created_at: string;
+  url: string;
+  thumbnail_url?: string | null;
+}
+
 interface Comment {
   id: number;
   show_id: number;
@@ -58,8 +73,10 @@ interface Show {
   artists?: { id: number; name: string }[];
   setlist?: Song[];
   photos?: Photo[];
+  videos?: Video[];
   comments?: Comment[];
   photo_count?: number;
+  video_count?: number;
   audio_count?: number;
   song_count?: number;
   comment_count?: number;
@@ -81,7 +98,7 @@ export default function ShowDetailPage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [show, setShow] = useState<Show | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'setlist' | 'photos' | 'comments' | 'people'>('setlist');
+  const [activeTab, setActiveTab] = useState<'setlist' | 'photos' | 'videos' | 'comments' | 'people'>('setlist');
 
   // Setlist state
   const [newSongName, setNewSongName] = useState('');
@@ -109,6 +126,28 @@ export default function ShowDetailPage() {
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [photoComments, setPhotoComments] = useState<Comment[]>([]);
   const [newPhotoComment, setNewPhotoComment] = useState('');
+
+  // Video state
+  const [isVideoUploading, setIsVideoUploading] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const [videoTitle, setVideoTitle] = useState('');
+  const videoFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Video recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [recordedPreviewUrl, setRecordedPreviewUrl] = useState<string | null>(null);
+  const [showRecordingUI, setShowRecordingUI] = useState(false);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+
+  // Video playback modal
+  const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
 
   // Comments state
   const [comments, setComments] = useState<Comment[]>([]);
@@ -412,6 +451,216 @@ export default function ShowDetailPage() {
     }
   };
 
+  // Video functions
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsVideoUploading(true);
+    setVideoUploadProgress(0);
+    try {
+      for (const file of Array.from(files)) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('show_id', showId);
+        if (videoTitle.trim()) formData.append('title', videoTitle.trim());
+
+        const response = await api.post('/videos', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          onUploadProgress: (progressEvent) => {
+            const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+            setVideoUploadProgress(percent);
+          }
+        });
+
+        setShow(prev => prev ? {
+          ...prev,
+          videos: [...(prev.videos || []), response.data]
+        } : null);
+      }
+      setVideoTitle('');
+    } catch (error) {
+      console.error('Failed to upload video:', error);
+    } finally {
+      setIsVideoUploading(false);
+      setVideoUploadProgress(0);
+      if (videoFileInputRef.current) videoFileInputRef.current.value = '';
+    }
+  };
+
+  const getRecorderMimeType = () => {
+    const types = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+      'video/mp4',
+    ];
+    for (const type of types) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return 'video/webm';
+  };
+
+  const startRecording = async () => {
+    setRecordingError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      streamRef.current = stream;
+
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+      }
+
+      const mimeType = getRecorderMimeType();
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+      chunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        setRecordedBlob(blob);
+        setRecordedPreviewUrl(url);
+        setIsRecording(false);
+
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop());
+          streamRef.current = null;
+        }
+        if (videoPreviewRef.current) {
+          videoPreviewRef.current.srcObject = null;
+        }
+      };
+
+      recorder.start(1000);
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime(prev => {
+          if (prev >= 59) {
+            recorder.stop();
+            if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+            return 60;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    } catch (error) {
+      console.error('Camera access denied:', error);
+      setRecordingError('Camera access denied. Please enable camera and microphone permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  };
+
+  const saveRecording = async () => {
+    if (!recordedBlob) return;
+
+    const ext = recordedBlob.type.includes('mp4') ? 'mp4' : 'webm';
+    const file = new File([recordedBlob], `recording.${ext}`, { type: recordedBlob.type });
+
+    setIsVideoUploading(true);
+    setVideoUploadProgress(0);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('show_id', showId);
+      if (videoTitle.trim()) formData.append('title', videoTitle.trim());
+
+      const response = await api.post('/videos', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+          setVideoUploadProgress(percent);
+        }
+      });
+
+      setShow(prev => prev ? {
+        ...prev,
+        videos: [...(prev.videos || []), response.data]
+      } : null);
+      cancelRecording();
+      setVideoTitle('');
+    } catch (error) {
+      console.error('Failed to save recording:', error);
+    } finally {
+      setIsVideoUploading(false);
+      setVideoUploadProgress(0);
+    }
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = null;
+    }
+    if (recordedPreviewUrl) {
+      URL.revokeObjectURL(recordedPreviewUrl);
+    }
+    setRecordedBlob(null);
+    setRecordedPreviewUrl(null);
+    setIsRecording(false);
+    setRecordingTime(0);
+    setShowRecordingUI(false);
+    setRecordingError(null);
+    chunksRef.current = [];
+  };
+
+  const deleteVideo = async (videoId: number) => {
+    if (!confirm('Delete this video?')) return;
+    try {
+      await api.delete(`/videos/${videoId}`);
+      setShow(prev => prev ? {
+        ...prev,
+        videos: (prev.videos || []).filter(v => v.id !== videoId)
+      } : null);
+      setSelectedVideo(null);
+    } catch (error) {
+      console.error('Failed to delete video:', error);
+    }
+  };
+
+  const formatVideoDuration = (seconds: number) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  // Cleanup recording resources on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+    };
+  }, []);
+
   // Delete handler
   const handleDelete = async () => {
     if (!confirm('Are you sure you want to delete this show? This cannot be undone.')) return;
@@ -587,7 +836,7 @@ export default function ShowDetailPage() {
 
           {/* Tabs */}
           <div className="flex gap-2 mb-6 border-b border-theme">
-            {(['setlist', 'photos', 'comments', ...(show.is_live ? ['people'] : [])] as ('setlist' | 'photos' | 'comments' | 'people')[]).map((tab) => (
+            {(['setlist', 'photos', 'videos', 'comments', ...(show.is_live ? ['people'] : [])] as ('setlist' | 'photos' | 'videos' | 'comments' | 'people')[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -599,6 +848,7 @@ export default function ShowDetailPage() {
               >
                 {tab === 'setlist' && 'Setlist'}
                 {tab === 'photos' && `Photos (${show.photos?.length || 0})`}
+                {tab === 'videos' && `Videos (${show.videos?.length || 0})`}
                 {tab === 'comments' && `Comments (${comments.length})`}
                 {tab === 'people' && 'People Here'}
                 {activeTab === tab && (
@@ -903,6 +1153,230 @@ export default function ShowDetailPage() {
                   </svg>
                   <p className="text-secondary">No photos yet</p>
                   {isOwner && <p className="text-sm text-muted mt-1">Capture the moment!</p>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Videos Tab */}
+          {activeTab === 'videos' && (
+            <div className="space-y-4">
+              {/* Upload/Record Section - only for owner */}
+              {isOwner && (
+                <div className="bg-secondary rounded-xl p-4 space-y-3">
+                  <input
+                    type="text"
+                    value={videoTitle}
+                    onChange={(e) => setVideoTitle(e.target.value)}
+                    placeholder="Video title (optional)"
+                    className="w-full px-4 py-2 bg-tertiary text-primary rounded-lg border border-theme focus:outline-none focus:ring-2 focus:ring-accent placeholder:text-muted text-sm"
+                  />
+
+                  {/* Upload progress bar */}
+                  {isVideoUploading && (
+                    <div className="w-full bg-tertiary rounded-full h-2 overflow-hidden">
+                      <div
+                        className="h-full bg-accent transition-all duration-300 rounded-full"
+                        style={{ width: `${videoUploadProgress}%` }}
+                      />
+                    </div>
+                  )}
+
+                  <input
+                    ref={videoFileInputRef}
+                    type="file"
+                    accept="video/*"
+                    onChange={handleVideoUpload}
+                    className="hidden"
+                    id="video-upload"
+                  />
+
+                  {!showRecordingUI && (
+                    <div className="flex gap-2">
+                      <label
+                        htmlFor="video-upload"
+                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-tertiary text-secondary hover:text-primary rounded-lg cursor-pointer transition-colors ${
+                          isVideoUploading ? 'opacity-50 cursor-not-allowed' : ''
+                        }`}
+                      >
+                        {isVideoUploading ? (
+                          <>
+                            <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+                            Uploading {videoUploadProgress}%
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            Upload Video
+                          </>
+                        )}
+                      </label>
+
+                      {typeof window !== 'undefined' && typeof navigator !== 'undefined' && navigator.mediaDevices && typeof MediaRecorder !== 'undefined' && (
+                        <button
+                          onClick={() => setShowRecordingUI(true)}
+                          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-tertiary text-secondary hover:text-primary rounded-lg transition-colors"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                          Record Video
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Recording Interface */}
+                  {showRecordingUI && (
+                    <div className="space-y-3">
+                      {/* Live viewfinder or recorded preview */}
+                      {recordedPreviewUrl ? (
+                        <video
+                          src={recordedPreviewUrl}
+                          controls
+                          className="w-full rounded-lg bg-black aspect-video"
+                        />
+                      ) : (
+                        <video
+                          ref={videoPreviewRef}
+                          autoPlay
+                          muted
+                          playsInline
+                          className="w-full rounded-lg bg-black aspect-video"
+                        />
+                      )}
+
+                      {/* Timer and progress */}
+                      {isRecording && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
+                              <span className={`font-mono text-lg font-bold ${recordingTime >= 50 ? 'text-red-400' : 'text-primary'}`}>
+                                {Math.floor(recordingTime / 60)}:{(recordingTime % 60).toString().padStart(2, '0')}
+                              </span>
+                            </div>
+                            <span className="text-xs text-muted">1:00 max</span>
+                          </div>
+                          <div className="w-full bg-tertiary rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-1000 rounded-full ${recordingTime >= 50 ? 'bg-red-500' : 'bg-accent'}`}
+                              style={{ width: `${(recordingTime / 60) * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {recordingError && (
+                        <p className="text-red-400 text-sm">{recordingError}</p>
+                      )}
+
+                      {/* Controls */}
+                      <div className="flex gap-2">
+                        {!isRecording && !recordedPreviewUrl && (
+                          <>
+                            <button
+                              onClick={startRecording}
+                              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                            >
+                              <span className="w-3 h-3 bg-white rounded-full"></span>
+                              Start Recording
+                            </button>
+                            <button
+                              onClick={cancelRecording}
+                              className="px-4 py-3 bg-tertiary text-secondary rounded-lg hover:text-primary transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        )}
+
+                        {isRecording && (
+                          <button
+                            onClick={stopRecording}
+                            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                          >
+                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                              <rect x="6" y="6" width="12" height="12" rx="2" />
+                            </svg>
+                            Stop Recording
+                          </button>
+                        )}
+
+                        {recordedPreviewUrl && (
+                          <>
+                            <button
+                              onClick={saveRecording}
+                              disabled={isVideoUploading}
+                              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-accent text-white rounded-lg hover:opacity-90 transition-colors disabled:opacity-50"
+                            >
+                              {isVideoUploading ? (
+                                <>
+                                  <div className="w-5 h-5 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+                                  Saving {videoUploadProgress}%
+                                </>
+                              ) : (
+                                'Save Recording'
+                              )}
+                            </button>
+                            <button
+                              onClick={cancelRecording}
+                              disabled={isVideoUploading}
+                              className="px-4 py-3 bg-tertiary text-secondary rounded-lg hover:text-primary transition-colors disabled:opacity-50"
+                            >
+                              Discard
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {!recordedPreviewUrl && !isRecording && (
+                        <p className="text-xs text-muted text-center">
+                          Video recording is limited to 1 minute for copyright protection
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Video Grid */}
+              {show.videos && show.videos.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {show.videos.map((video) => (
+                    <div
+                      key={video.id}
+                      onClick={() => setSelectedVideo(video)}
+                      className="bg-secondary rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-accent/50 transition-all"
+                    >
+                      <div className="aspect-video bg-black relative flex items-center justify-center">
+                        <svg className="w-16 h-16 text-white/40 group-hover:text-white/70 transition-colors" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                        {video.duration && (
+                          <span className="absolute bottom-2 right-2 bg-black/70 text-white text-xs px-2 py-0.5 rounded">
+                            {formatVideoDuration(video.duration)}
+                          </span>
+                        )}
+                      </div>
+                      <div className="p-3">
+                        <p className="text-primary font-medium text-sm truncate">
+                          {video.title || video.original_filename || 'Untitled'}
+                        </p>
+                        <p className="text-muted text-xs mt-1">{formatTimestamp(video.created_at)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-secondary rounded-xl p-8 text-center">
+                  <svg className="w-12 h-12 text-muted mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  <p className="text-secondary">No videos yet</p>
+                  {isOwner && <p className="text-sm text-muted mt-1">Record or upload a clip!</p>}
                 </div>
               )}
             </div>
@@ -1229,6 +1703,64 @@ export default function ShowDetailPage() {
                   >
                     Post
                   </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Video Playback Modal */}
+        {selectedVideo && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setSelectedVideo(null)}>
+            <div className="bg-secondary rounded-xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+              {/* Modal header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-theme">
+                <h3 className="font-medium text-primary truncate mr-2">
+                  {selectedVideo.title || selectedVideo.original_filename || 'Video'}
+                </h3>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {isOwner && (
+                    <button
+                      onClick={() => deleteVideo(selectedVideo.id)}
+                      className="p-1 text-muted hover:text-red-400 transition-colors"
+                      title="Delete video"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  )}
+                  <button onClick={() => setSelectedVideo(null)} className="p-1 text-muted hover:text-primary transition-colors">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {/* Video player */}
+              <div className="flex-shrink-0 bg-black">
+                <video
+                  src={`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}${selectedVideo.url}`}
+                  controls
+                  autoPlay
+                  className="w-full max-h-[60vh]"
+                />
+              </div>
+
+              {/* Metadata */}
+              <div className="px-4 py-3 space-y-1">
+                {selectedVideo.description && (
+                  <p className="text-secondary text-sm">{selectedVideo.description}</p>
+                )}
+                <div className="flex items-center gap-3 text-xs text-muted">
+                  <span>{formatTimestamp(selectedVideo.created_at)}</span>
+                  {selectedVideo.duration && (
+                    <span>{formatVideoDuration(selectedVideo.duration)}</span>
+                  )}
+                  {selectedVideo.file_size && (
+                    <span>{(selectedVideo.file_size / (1024 * 1024)).toFixed(1)} MB</span>
+                  )}
                 </div>
               </div>
             </div>

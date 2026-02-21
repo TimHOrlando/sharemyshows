@@ -55,7 +55,41 @@ error_response = api.model('ErrorResponse', {
 
 
 @api.route('')
-class CommentCreate(Resource):
+class CommentListCreate(Resource):
+    @api.doc('list_user_comments', security='jwt')
+    @api.response(200, 'Success', comment_list_model)
+    @jwt_required()
+    def get(self):
+        """Get all comments by the current user, with show and photo info"""
+        current_user_id = int(get_jwt_identity())
+        results = db.session.query(Comment, Show)\
+            .join(Show, Comment.show_id == Show.id)\
+            .filter(Comment.user_id == current_user_id)\
+            .order_by(Show.date.desc(), Comment.created_at.desc()).all()
+
+        # Collect photo_ids to batch-fetch captions
+        photo_ids = [c.photo_id for c, _ in results if c.photo_id]
+        photo_map = {}
+        if photo_ids:
+            photos = Photo.query.filter(Photo.id.in_(photo_ids)).all()
+            photo_map = {p.id: p for p in photos}
+
+        comments = []
+        for comment, show in results:
+            d = comment.to_dict()
+            d['artist_name'] = show.artist.name if show.artist else 'Unknown Artist'
+            d['venue_name'] = show.venue.name if show.venue else 'Unknown Venue'
+            d['show_date'] = show.date.isoformat() if show.date else None
+            if comment.photo_id and comment.photo_id in photo_map:
+                photo = photo_map[comment.photo_id]
+                d['photo_caption'] = photo.caption or photo.filename
+            comments.append(d)
+
+        return {
+            'comments': comments,
+            'total': len(comments)
+        }
+
     @api.doc('create_comment', security='jwt')
     @api.expect(comment_create_model)
     @api.response(201, 'Comment created', comment_model)

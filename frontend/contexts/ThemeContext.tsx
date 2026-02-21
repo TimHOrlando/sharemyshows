@@ -122,10 +122,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     properties.forEach(prop => root.style.removeProperty(prop));
   };
 
+  const syncThemeToBackend = (themeName: ThemeName) => {
+    const token = localStorage.getItem('access_token');
+    if (!token) return;
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api'}/auth/profile/theme`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ theme: themeName }),
+    }).catch(() => {});
+  };
+
   const setTheme = (newTheme: ThemeName) => {
     setThemeState(newTheme);
     localStorage.setItem('sharemyshows-theme', newTheme);
     applyThemeToDOM(newTheme, customColors);
+    syncThemeToBackend(newTheme);
   };
 
   const setCustomColors = (colors: ThemeColors) => {

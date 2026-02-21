@@ -30,6 +30,9 @@ class User(db.Model):
     reset_token = db.Column(db.String(100))
     reset_token_expires = db.Column(db.DateTime)
     
+    # Preferences
+    theme_preference = db.Column(db.String(20), default='forest')
+
     # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -157,7 +160,16 @@ class Show(db.Model):
     checkins = db.relationship('ShowCheckin', backref='show', lazy='dynamic', cascade='all, delete-orphan')
     chat_messages = db.relationship('ChatMessage', backref='show', lazy='dynamic', cascade='all, delete-orphan')
     
-    def to_dict(self, include_details=False, viewer_id=None):
+    def to_dict(self, include_details=False, viewer_id=None, counts=None):
+        if counts:
+            photo_count, audio_count, video_count, comment_count, song_count = counts
+        else:
+            photo_count = self.photos.count()
+            audio_count = self.audio_recordings.count()
+            video_count = self.video_recordings.count()
+            comment_count = self.comments.count()
+            song_count = self.setlist_songs.count()
+
         data = {
             'id': self.id,
             'user_id': self.user_id,
@@ -169,11 +181,11 @@ class Show(db.Model):
             'time': self.time.strftime('%H:%M') if self.time else None,
             'notes': self.notes,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'photo_count': self.photos.count(),
-            'audio_count': self.audio_recordings.count(),
-            'video_count': self.video_recordings.count(),
-            'comment_count': self.comments.count(),
-            'song_count': self.setlist_songs.count()
+            'photo_count': photo_count,
+            'audio_count': audio_count,
+            'video_count': video_count,
+            'comment_count': comment_count,
+            'song_count': song_count
         }
 
         if include_details:
@@ -248,20 +260,25 @@ class VideoRecording(db.Model):
     show_id = db.Column(db.Integer, db.ForeignKey('shows.id'), nullable=False)
     filename = db.Column(db.String(255), nullable=False)
     original_filename = db.Column(db.String(255))
+    file_path = db.Column(db.String(500))
     title = db.Column(db.String(200))
+    description = db.Column(db.Text)
     duration = db.Column(db.Integer)
+    file_size = db.Column(db.Integer)
     thumbnail_filename = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     def to_dict(self):
         return {
             'id': self.id,
+            'user_id': self.user_id,
             'show_id': self.show_id,
             'filename': self.filename,
             'original_filename': self.original_filename,
             'title': self.title,
+            'description': self.description,
             'duration': self.duration,
-            'thumbnail_filename': self.thumbnail_filename,
+            'file_size': self.file_size,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'url': f'/api/videos/{self.id}',
             'thumbnail_url': f'/api/videos/{self.id}/thumbnail' if self.thumbnail_filename else None

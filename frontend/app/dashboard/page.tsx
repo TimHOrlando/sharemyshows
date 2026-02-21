@@ -145,8 +145,8 @@ export default function DashboardPage() {
           {/* Stats Bar */}
           {loading ? (
             <div className="bg-secondary rounded-xl p-4 mb-6">
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-4">
-                {[...Array(5)].map((_, i) => (
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
+                {[...Array(6)].map((_, i) => (
                   <div key={i} className="animate-pulse">
                     <div className="h-4 bg-tertiary rounded w-1/2 mb-2"></div>
                     <div className="h-8 bg-tertiary rounded w-1/3"></div>
@@ -156,12 +156,13 @@ export default function DashboardPage() {
             </div>
           ) : stats ? (
             <div className="bg-secondary rounded-xl p-4 mb-6">
-              <div className="grid grid-cols-3 sm:grid-cols-5 gap-4">
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
                 <StatItem type="shows" label="Shows" value={stats.total_shows} onClick={() => router.push('/shows')} />
                 <StatItem type="artists" label="Artists" value={stats.total_artists} onClick={() => router.push('/artists')} />
                 <StatItem type="venues" label="Venues" value={stats.total_venues} onClick={() => router.push('/venues')} />
                 <StatItem type="photos" label="Photos" value={stats.total_photos} onClick={() => router.push('/photos')} />
-                <StatItem type="comments" label="Comments" value={stats.total_comments} onClick={() => router.push('/shows')} />
+                <StatItem type="videos" label="Videos" value={stats.total_videos} onClick={() => router.push('/videos')} />
+                <StatItem type="comments" label="Comments" value={stats.total_comments} onClick={() => router.push('/comments')} />
               </div>
             </div>
           ) : null}
@@ -347,7 +348,7 @@ export default function DashboardPage() {
   );
 }
 
-function StatItem({ type, label, value, onClick }: { type: 'shows' | 'artists' | 'venues' | 'photos' | 'comments'; label: string; value: number; onClick: () => void }) {
+function StatItem({ type, label, value, onClick }: { type: 'shows' | 'artists' | 'venues' | 'photos' | 'videos' | 'comments'; label: string; value: number; onClick: () => void }) {
   const icons = {
     shows: (
       <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -369,6 +370,11 @@ function StatItem({ type, label, value, onClick }: { type: 'shows' | 'artists' |
       <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    ),
+    videos: (
+      <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
       </svg>
     ),
     comments: (

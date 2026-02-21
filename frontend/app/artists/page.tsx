@@ -116,7 +116,7 @@ export default function ArtistsPage() {
                   </div>
                   {artist.description && (
                     <p
-                      className="text-sm text-muted mt-3 line-clamp-2 cursor-help"
+                      className="text-sm text-muted mt-3 line-clamp-2"
                       onMouseEnter={(e) => showTooltip(artist.artist_id, e)}
                       onMouseLeave={hideTooltip}
                     >

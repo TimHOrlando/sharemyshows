@@ -8,8 +8,32 @@ from flask import request
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, date
+from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 
-from app.models import db, Show, Artist, Venue, SetlistSong, ShowCheckin, User, get_friend_ids
+from app.models import db, Show, Artist, Venue, SetlistSong, ShowCheckin, User, Photo, AudioRecording, VideoRecording, Comment, get_friend_ids
+
+
+def _batch_counts(show_ids):
+    """Pre-compute media/comment/song counts for a list of shows in 5 queries instead of 5*N."""
+    if not show_ids:
+        return {}
+    photo_counts = dict(db.session.query(Photo.show_id, func.count(Photo.id))
+        .filter(Photo.show_id.in_(show_ids)).group_by(Photo.show_id).all())
+    audio_counts = dict(db.session.query(AudioRecording.show_id, func.count(AudioRecording.id))
+        .filter(AudioRecording.show_id.in_(show_ids)).group_by(AudioRecording.show_id).all())
+    video_counts = dict(db.session.query(VideoRecording.show_id, func.count(VideoRecording.id))
+        .filter(VideoRecording.show_id.in_(show_ids)).group_by(VideoRecording.show_id).all())
+    comment_counts = dict(db.session.query(Comment.show_id, func.count(Comment.id))
+        .filter(Comment.show_id.in_(show_ids)).group_by(Comment.show_id).all())
+    song_counts = dict(db.session.query(SetlistSong.show_id, func.count(SetlistSong.id))
+        .filter(SetlistSong.show_id.in_(show_ids)).group_by(SetlistSong.show_id).all())
+    return {
+        sid: (photo_counts.get(sid, 0), audio_counts.get(sid, 0),
+              video_counts.get(sid, 0), comment_counts.get(sid, 0),
+              song_counts.get(sid, 0))
+        for sid in show_ids
+    }
 
 # Create namespace
 api = Namespace('shows', description='Show management operations')
@@ -128,9 +152,14 @@ class ShowList(Resource):
     def get(self):
         """Get list of user's shows with optional filters"""
         current_user_id = int(get_jwt_identity())
-        
-        query = Show.query.filter_by(user_id=current_user_id)
-        
+
+        # Eager-load user, artist, venue to eliminate N+1
+        query = Show.query.options(
+            joinedload(Show.user),
+            joinedload(Show.artist),
+            joinedload(Show.venue),
+        ).filter_by(user_id=current_user_id)
+
         # Apply filters
         artist_filter = request.args.get('artist')
         artist_id_filter = request.args.get('artist_id', type=int)
@@ -164,7 +193,12 @@ class ShowList(Resource):
             shows = query.limit(limit).all()
         else:
             shows = query.all()
-        return [show.to_dict(viewer_id=current_user_id) for show in shows]
+
+        # Batch-compute counts (5 queries total instead of 5 per show)
+        show_ids = [s.id for s in shows]
+        counts_map = _batch_counts(show_ids)
+
+        return [show.to_dict(viewer_id=current_user_id, counts=counts_map.get(show.id)) for show in shows]
     
     @api.doc('create_show', security='jwt')
     @api.expect(show_create_model)
@@ -244,12 +278,19 @@ class ShowFeed(Resource):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 20, type=int)
 
-        query = Show.query.filter(Show.user_id.in_(friend_ids)).order_by(Show.date.desc())
+        query = Show.query.options(
+            joinedload(Show.user),
+            joinedload(Show.artist),
+            joinedload(Show.venue),
+        ).filter(Show.user_id.in_(friend_ids)).order_by(Show.date.desc())
         total = query.count()
         shows = query.offset((page - 1) * per_page).limit(per_page).all()
 
+        show_ids = [s.id for s in shows]
+        counts_map = _batch_counts(show_ids)
+
         return {
-            'shows': [s.to_dict(viewer_id=current_user_id) for s in shows],
+            'shows': [s.to_dict(viewer_id=current_user_id, counts=counts_map.get(s.id)) for s in shows],
             'total': total,
             'page': page,
             'pages': (total + per_page - 1) // per_page

@@ -4,6 +4,8 @@ import { useState, FormEvent, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { authService } from '@/lib/auth';
+import PasswordRequirements from '@/components/PasswordRequirements';
+import { validatePassword } from '@/lib/passwordValidation';
 
 function ResetPasswordContent() {
   const router = useRouter();
@@ -32,8 +34,12 @@ function ResetPasswordContent() {
     setError('');
     setSuccessMessage('');
 
-    if (!password || password.length < 8) {
-      setError('Password must be at least 8 characters');
+    if (!password) {
+      setError('Password is required');
+      return;
+    }
+    if (!validatePassword(password)) {
+      setError('Password does not meet all requirements');
       return;
     }
 
@@ -110,7 +116,7 @@ function ResetPasswordContent() {
                   onChange={(e) => setPassword(e.target.value)}
                   className="mt-1 appearance-none relative block w-full px-3 py-2 pr-10 border border-theme placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm"
                   placeholder="••••••••"
-                  minLength={8}
+                  minLength={12}
                 />
                 <button
                   type="button"
@@ -129,7 +135,7 @@ function ResetPasswordContent() {
                   )}
                 </button>
               </div>
-              <p className="mt-1 text-xs text-muted">Must be at least 8 characters</p>
+              <PasswordRequirements password={password} />
             </div>
 
             {/* Confirm Password */}
@@ -148,7 +154,7 @@ function ResetPasswordContent() {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   className="mt-1 appearance-none relative block w-full px-3 py-2 pr-10 border border-theme placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm"
                   placeholder="••••••••"
-                  minLength={8}
+                  minLength={12}
                 />
                 <button
                   type="button"
@@ -173,9 +179,9 @@ function ResetPasswordContent() {
           <div>
             <button
               type="submit"
-              disabled={isLoading || !token || !!successMessage}
+              disabled={isLoading || !token || !!successMessage || (password.length > 0 && !validatePassword(password)) || (confirmPassword.length > 0 && password !== confirmPassword)}
               className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
-                isLoading || !token || !!successMessage
+                isLoading || !token || !!successMessage || (password.length > 0 && !validatePassword(password)) || (confirmPassword.length > 0 && password !== confirmPassword)
                   ? 'bg-accent opacity-50 cursor-not-allowed'
                   : 'bg-accent hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent'
               }`}

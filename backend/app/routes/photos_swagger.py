@@ -10,7 +10,7 @@ from werkzeug.datastructures import FileStorage
 import os
 from PIL import Image
 
-from app.models import db, Photo, Show
+from app.models import db, Photo, Show, Artist, Venue
 
 # Create namespace
 api = Namespace('photos', description='Photo management operations')
@@ -65,11 +65,23 @@ class PhotoList(Resource):
     @api.response(200, 'Success', photo_list_model)
     @jwt_required()
     def get(self):
-        """Get all photos for the current user"""
+        """Get all photos for the current user, with show info"""
         current_user_id = int(get_jwt_identity())
-        photos = Photo.query.filter_by(user_id=current_user_id).order_by(Photo.created_at.desc()).all()
+        results = db.session.query(Photo, Show)\
+            .join(Show, Photo.show_id == Show.id)\
+            .filter(Photo.user_id == current_user_id)\
+            .order_by(Show.date.desc(), Photo.created_at.desc()).all()
+
+        photos = []
+        for photo, show in results:
+            d = photo.to_dict()
+            d['artist_name'] = show.artist.name if show.artist else 'Unknown Artist'
+            d['venue_name'] = show.venue.name if show.venue else 'Unknown Venue'
+            d['show_date'] = show.date.isoformat() if show.date else None
+            photos.append(d)
+
         return {
-            'photos': [photo.to_dict() for photo in photos],
+            'photos': photos,
             'total': len(photos)
         }
 

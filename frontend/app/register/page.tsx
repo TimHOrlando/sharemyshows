@@ -4,6 +4,8 @@ import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import PasswordRequirements from '@/components/PasswordRequirements';
+import { validatePassword } from '@/lib/passwordValidation';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -43,8 +45,8 @@ export default function RegisterPage() {
     // Password validation
     if (!formData.password) {
       newErrors.password = 'Password is required';
-    } else if (formData.password.length < 8) {
-      newErrors.password = 'Password must be at least 8 characters';
+    } else if (!validatePassword(formData.password)) {
+      newErrors.password = 'Password does not meet all requirements';
     }
 
     // Confirm password validation
@@ -215,6 +217,7 @@ export default function RegisterPage() {
               {errors.password && (
                 <p className="mt-1 text-sm text-red-400">{errors.password}</p>
               )}
+              <PasswordRequirements password={formData.password} />
             </div>
 
             {/* Confirm Password */}
@@ -277,9 +280,9 @@ export default function RegisterPage() {
           <div>
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || (formData.password.length > 0 && !validatePassword(formData.password)) || (formData.confirmPassword.length > 0 && formData.password !== formData.confirmPassword)}
               className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
-                isLoading
+                isLoading || (formData.password.length > 0 && !validatePassword(formData.password)) || (formData.confirmPassword.length > 0 && formData.password !== formData.confirmPassword)
                   ? 'bg-accent opacity-50 cursor-not-allowed'
                   : 'bg-accent hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent'
               }`}

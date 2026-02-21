@@ -8,6 +8,7 @@ from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 from flask_socketio import SocketIO
 from flask_restx import Api
+from flask_caching import Cache
 
 from config.config import config
 from app.models import db
@@ -16,9 +17,10 @@ from app.models import db
 jwt = JWTManager()
 migrate = Migrate()
 socketio = SocketIO()
+cache = Cache()
 
 # Export socketio for use in run.py
-__all__ = ['create_app', 'socketio', 'db']
+__all__ = ['create_app', 'socketio', 'db', 'cache']
 
 def create_app(config_name='development'):
     """Application factory pattern"""
@@ -29,6 +31,11 @@ def create_app(config_name='development'):
     db.init_app(app)
     jwt.init_app(app)
     migrate.init_app(app, db)
+
+    # Configure cache
+    app.config['CACHE_TYPE'] = 'SimpleCache'
+    app.config['CACHE_DEFAULT_TIMEOUT'] = 120
+    cache.init_app(app)
     
     # Configure CORS
     CORS(app, 

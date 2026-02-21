@@ -17,3 +17,4 @@ python-socketio==5.10.0
 eventlet==0.33.3
 flask-restx==1.3.0
 Flask-Mail
+Flask-Caching==2.1.0
