@@ -38,5 +38,6 @@ if __name__ == '__main__':
         port=port,
         debug=debug,
         use_reloader=debug,
-        log_output=True
+        log_output=True,
+        allow_unsafe_werkzeug=True
     )

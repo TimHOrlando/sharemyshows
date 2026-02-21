@@ -87,17 +87,19 @@ class Artist(db.Model):
     mbid = db.Column(db.String(36))
     spotify_id = db.Column(db.String(50))
     image_url = db.Column(db.String(500))
+    disambiguation = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     shows = db.relationship('Show', backref='artist', lazy='dynamic')
-    
+
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
             'mbid': self.mbid,
             'spotify_id': self.spotify_id,
-            'image_url': self.image_url
+            'image_url': self.image_url,
+            'disambiguation': self.disambiguation
         }
 
 class Venue(db.Model):

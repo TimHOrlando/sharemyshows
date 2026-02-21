@@ -56,6 +56,8 @@ function ShowsContent() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'upcoming' | 'past'>('all');
   const [filterLabel, setFilterLabel] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'artist_asc' | 'venue_asc'>('date_desc');
 
   const artistId = searchParams.get('artist_id');
   const venueId = searchParams.get('venue_id');
@@ -131,12 +133,42 @@ function ShowsContent() {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
 
+    let result = shows;
+
+    // Time filter
     if (filter === 'upcoming') {
-      return shows.filter(show => new Date(show.date + 'T12:00:00') >= now);
+      result = result.filter(show => new Date(show.date + 'T12:00:00') >= now);
     } else if (filter === 'past') {
-      return shows.filter(show => new Date(show.date + 'T12:00:00') < now);
+      result = result.filter(show => new Date(show.date + 'T12:00:00') < now);
     }
-    return shows;
+
+    // Search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(show =>
+        show.artist?.name?.toLowerCase().includes(q) ||
+        show.venue?.name?.toLowerCase().includes(q) ||
+        show.venue?.city?.toLowerCase().includes(q) ||
+        show.venue?.state?.toLowerCase().includes(q)
+      );
+    }
+
+    // Sort
+    result = [...result].sort((a, b) => {
+      switch (sortBy) {
+        case 'date_asc':
+          return a.date.localeCompare(b.date);
+        case 'artist_asc':
+          return (a.artist?.name || '').localeCompare(b.artist?.name || '');
+        case 'venue_asc':
+          return (a.venue?.name || '').localeCompare(b.venue?.name || '');
+        case 'date_desc':
+        default:
+          return b.date.localeCompare(a.date);
+      }
+    });
+
+    return result;
   };
 
   const filteredShows = getFilteredShows();
@@ -154,7 +186,9 @@ function ShowsContent() {
                 {filterLabel ? `Shows: ${filterLabel}` : 'My Shows'}
               </h1>
               <p className="text-secondary">
-                {shows.length} {shows.length === 1 ? 'show' : 'shows'} {filterLabel ? 'found' : 'documented'}
+                {filteredShows.length !== shows.length
+                  ? `${filteredShows.length} of ${shows.length} shows`
+                  : `${shows.length} ${shows.length === 1 ? 'show' : 'shows'} ${filterLabel ? 'found' : 'documented'}`}
               </p>
               {filterLabel && (
                 <button
@@ -199,6 +233,43 @@ function ShowsContent() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Search & Sort */}
+          <div className="flex flex-col sm:flex-row gap-3 mb-6">
+            <div className="relative flex-1">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search artist, venue, or city..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-3 bg-secondary text-primary rounded-xl border border-transparent focus:border-accent focus:outline-none placeholder:text-muted"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-primary"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              className="px-4 py-3 bg-secondary text-primary rounded-xl border border-transparent focus:border-accent focus:outline-none cursor-pointer appearance-none"
+              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' viewBox='0 0 24 24' stroke='%239ca3af'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '2.5rem' }}
+            >
+              <option value="date_desc">Date: Newest First</option>
+              <option value="date_asc">Date: Oldest First</option>
+              <option value="artist_asc">Artist: A-Z</option>
+              <option value="venue_asc">Venue: A-Z</option>
+            </select>
           </div>
 
           {/* Shows Grid */}

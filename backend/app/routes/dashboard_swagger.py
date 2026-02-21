@@ -5,11 +5,83 @@ Handles user statistics and recent activity feeds
 from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func
+import requests
+import time
+import re
 
 from app.models import (
-    db, Show, Artist, Venue, Photo, AudioRecording, 
+    db, Show, Artist, Venue, Photo, AudioRecording,
     VideoRecording, Comment, User
 )
+
+MUSICBRAINZ_BASE_URL = 'https://musicbrainz.org/ws/2'
+MUSICBRAINZ_HEADERS = {
+    'User-Agent': 'ShareMyShows/1.0 (tim.h.orlando@gmail.com)',
+    'Accept': 'application/json'
+}
+
+
+def fetch_artist_description(mbid):
+    """Fetch artist description via MusicBrainz → Wikidata → Wikipedia pipeline.
+    Returns description string or None."""
+    try:
+        # Step 1: Get Wikidata URL from MusicBrainz
+        resp = requests.get(
+            f'{MUSICBRAINZ_BASE_URL}/artist/{mbid}?inc=url-rels&fmt=json',
+            headers=MUSICBRAINZ_HEADERS,
+            timeout=5
+        )
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+
+        # Look for wikidata link first, then direct wikipedia link
+        wikidata_qid = None
+        wiki_title = None
+        for rel in data.get('relations', []):
+            url = rel.get('url', {}).get('resource', '')
+            if rel.get('type') == 'wikidata':
+                match = re.search(r'/wiki/(Q\d+)$', url)
+                if match:
+                    wikidata_qid = match.group(1)
+            elif rel.get('type') == 'wikipedia':
+                match = re.search(r'en\.wikipedia\.org/wiki/(.+)$', url)
+                if match:
+                    wiki_title = match.group(1)
+
+        # Step 2: Resolve Wikipedia title via Wikidata if needed
+        if not wiki_title and wikidata_qid:
+            time.sleep(1)  # MusicBrainz rate limit: 1 req/sec
+            wd_resp = requests.get(
+                f'https://www.wikidata.org/w/api.php?action=wbgetentities&ids={wikidata_qid}&sitefilter=enwiki&props=sitelinks&format=json',
+                headers={'User-Agent': 'ShareMyShows/1.0'},
+                timeout=5
+            )
+            if wd_resp.status_code == 200:
+                wd_data = wd_resp.json()
+                sitelinks = wd_data.get('entities', {}).get(wikidata_qid, {}).get('sitelinks', {})
+                if 'enwiki' in sitelinks:
+                    wiki_title = sitelinks['enwiki']['title']
+
+        if not wiki_title:
+            return None
+
+        # Step 3: Fetch Wikipedia summary
+        time.sleep(1)
+        wiki_resp = requests.get(
+            f'https://en.wikipedia.org/api/rest_v1/page/summary/{wiki_title}',
+            headers={'User-Agent': 'ShareMyShows/1.0'},
+            timeout=5
+        )
+        if wiki_resp.status_code != 200:
+            return None
+
+        wiki_data = wiki_resp.json()
+        return wiki_data.get('extract', '')
+
+    except Exception:
+        return None
 
 # Create namespace
 api = Namespace('dashboard', description='Dashboard statistics and recent activity')
@@ -28,7 +100,8 @@ stats_model = api.model('DashboardStats', {
 artist_stats_model = api.model('ArtistStats', {
     'artist_name': fields.String(description='Artist name'),
     'show_count': fields.Integer(description='Number of shows'),
-    'artist_id': fields.Integer(description='Artist ID')
+    'artist_id': fields.Integer(description='Artist ID'),
+    'description': fields.String(description='Artist description from Wikipedia via MusicBrainz')
 })
 
 venue_stats_model = api.model('VenueStats', {
@@ -145,25 +218,51 @@ class DashboardArtists(Resource):
     def get(self):
         """Get user's top artists by show count"""
         current_user_id = int(get_jwt_identity())
-        
+
         # Get artists with show counts
         artist_stats = db.session.query(
             Artist.id,
             Artist.name,
+            Artist.mbid,
+            Artist.disambiguation,
             func.count(Show.id).label('show_count')
         ).join(Show, Show.artist_id == Artist.id)\
          .filter(Show.user_id == current_user_id)\
-         .group_by(Artist.id, Artist.name)\
+         .group_by(Artist.id, Artist.name, Artist.mbid, Artist.disambiguation)\
          .order_by(func.count(Show.id).desc())\
-         .limit(10)\
          .all()
-        
+
+        # Lazily backfill descriptions from MusicBrainz/Wikipedia (up to 3 per request)
+        backfill_count = 0
+        for artist_id, artist_name, mbid, description, show_count in artist_stats:
+            if mbid and not description and backfill_count < 3:
+                desc = fetch_artist_description(mbid)
+                if desc:
+                    artist = Artist.query.get(artist_id)
+                    artist.disambiguation = desc
+                    backfill_count += 1
+        if backfill_count > 0:
+            db.session.commit()
+            # Re-query to get updated descriptions
+            artist_stats = db.session.query(
+                Artist.id,
+                Artist.name,
+                Artist.mbid,
+                Artist.disambiguation,
+                func.count(Show.id).label('show_count')
+            ).join(Show, Show.artist_id == Artist.id)\
+             .filter(Show.user_id == current_user_id)\
+             .group_by(Artist.id, Artist.name, Artist.mbid, Artist.disambiguation)\
+             .order_by(func.count(Show.id).desc())\
+             .all()
+
         results = [{
             'artist_id': artist_id,
             'artist_name': artist_name,
-            'show_count': show_count
-        } for artist_id, artist_name, show_count in artist_stats]
-        
+            'show_count': show_count,
+            'description': description or ''
+        } for artist_id, artist_name, mbid, description, show_count in artist_stats]
+
         return {
             'artists': results,
             'total': len(results)
