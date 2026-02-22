@@ -33,6 +33,8 @@ export default function FriendsPage() {
   // Friends list
   const [friends, setFriends] = useState<Friendship[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(true);
+  const [friendsSearch, setFriendsSearch] = useState('');
+  const [friendsSort, setFriendsSort] = useState<'name_asc' | 'name_desc' | 'newest' | 'oldest'>('name_asc');
 
   // Friend requests
   const [requests, setRequests] = useState<Friendship[]>([]);
@@ -183,6 +185,36 @@ export default function FriendsPage() {
     setTimeout(() => setMessage(null), 5000);
   };
 
+  const getFilteredFriends = () => {
+    let result = friends;
+
+    if (friendsSearch.trim()) {
+      const q = friendsSearch.toLowerCase();
+      result = result.filter(f =>
+        f.friend.username.toLowerCase().includes(q) ||
+        f.friend.email.toLowerCase().includes(q)
+      );
+    }
+
+    result = [...result].sort((a, b) => {
+      switch (friendsSort) {
+        case 'name_desc':
+          return b.friend.username.localeCompare(a.friend.username);
+        case 'newest':
+          return b.created_at.localeCompare(a.created_at);
+        case 'oldest':
+          return a.created_at.localeCompare(b.created_at);
+        case 'name_asc':
+        default:
+          return a.friend.username.localeCompare(b.friend.username);
+      }
+    });
+
+    return result;
+  };
+
+  const filteredFriends = getFilteredFriends();
+
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', {
@@ -236,7 +268,7 @@ export default function FriendsPage() {
                         : 'border-transparent text-muted hover:text-secondary hover:border-theme'
                     }`}
                   >
-                    My Friends ({friends.length})
+                    My Friends ({filteredFriends.length !== friends.length ? `${filteredFriends.length}/` : ''}{friends.length})
                   </button>
                   <button
                     onClick={() => setActiveTab('requests')}
@@ -271,14 +303,53 @@ export default function FriendsPage() {
                 {/* Friends List Tab */}
                 {activeTab === 'friends' && (
                   <div>
+                    {/* Search & Sort */}
+                    {friends.length > 0 && (
+                      <div className="flex flex-col sm:flex-row gap-3 mb-6">
+                        <div className="relative flex-1">
+                          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                          <input
+                            type="text"
+                            placeholder="Search friends..."
+                            value={friendsSearch}
+                            onChange={(e) => setFriendsSearch(e.target.value)}
+                            className="w-full pl-10 pr-4 py-3 bg-secondary text-primary rounded-xl border border-transparent focus:border-accent focus:outline-none placeholder:text-muted"
+                          />
+                          {friendsSearch && (
+                            <button
+                              onClick={() => setFriendsSearch('')}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-primary"
+                            >
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                        <select
+                          value={friendsSort}
+                          onChange={(e) => setFriendsSort(e.target.value as typeof friendsSort)}
+                          className="px-4 py-3 bg-secondary text-primary rounded-xl border border-transparent focus:border-accent focus:outline-none cursor-pointer appearance-none"
+                          style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' viewBox='0 0 24 24' stroke='%239ca3af'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', paddingRight: '2.5rem' }}
+                        >
+                          <option value="name_asc">Name: A-Z</option>
+                          <option value="name_desc">Name: Z-A</option>
+                          <option value="newest">Newest First</option>
+                          <option value="oldest">Oldest First</option>
+                        </select>
+                      </div>
+                    )}
+
                     {loadingFriends ? (
                       <div className="text-center py-12">
                         <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-accent"></div>
                         <p className="mt-2 text-sm text-muted">Loading friends...</p>
                       </div>
-                    ) : friends.length > 0 ? (
+                    ) : filteredFriends.length > 0 ? (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {friends.map((friendship) => (
+                        {filteredFriends.map((friendship) => (
                           <div key={friendship.id} className="bg-secondary rounded-xl p-4 hover:bg-tertiary transition-colors">
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
@@ -314,14 +385,29 @@ export default function FriendsPage() {
                         <svg className="mx-auto h-12 w-12 text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
                         </svg>
-                        <h3 className="mt-2 text-sm font-medium text-primary">No friends yet</h3>
-                        <p className="mt-1 text-sm text-muted">Start by searching for users to connect with.</p>
-                        <button
-                          onClick={() => setActiveTab('search')}
-                          className="mt-4 px-4 py-2 text-sm text-white bg-accent rounded-md hover:opacity-90"
-                        >
-                          Find Friends
-                        </button>
+                        {friends.length > 0 ? (
+                          <>
+                            <h3 className="mt-2 text-sm font-medium text-primary">No friends found</h3>
+                            <p className="mt-1 text-sm text-muted">Try a different search term.</p>
+                            <button
+                              onClick={() => setFriendsSearch('')}
+                              className="mt-4 px-4 py-2 text-sm text-white bg-accent rounded-md hover:opacity-90"
+                            >
+                              Clear Search
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <h3 className="mt-2 text-sm font-medium text-primary">No friends yet</h3>
+                            <p className="mt-1 text-sm text-muted">Start by searching for users to connect with.</p>
+                            <button
+                              onClick={() => setActiveTab('search')}
+                              className="mt-4 px-4 py-2 text-sm text-white bg-accent rounded-md hover:opacity-90"
+                            >
+                              Find Friends
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
