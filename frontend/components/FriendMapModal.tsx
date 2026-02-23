@@ -149,7 +149,6 @@ export default function FriendMapModal({
   };
 
   const handleMarkerClick = (friend: FriendLocation) => {
-    console.warn('[FriendMap] Marker clicked:', friend.username, friend.latitude, friend.longitude);
     setSelectedFriend(friend);
     fetchDirections(friend);
   };
