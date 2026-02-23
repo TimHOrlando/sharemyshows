@@ -32,6 +32,8 @@ export default function PhotosPage() {
   const [groups, setGroups] = useState<ShowGroup[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'artist_asc' | 'photos_desc'>('date_desc');
 
   useEffect(() => {
     fetchPhotos();

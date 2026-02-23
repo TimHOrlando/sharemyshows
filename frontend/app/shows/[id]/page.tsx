@@ -226,22 +226,36 @@ export default function ShowDetailPage() {
     if (!newSongName.trim() || !show) return;
 
     try {
-      const position = (show.setlist?.length || 0) + 1;
-      const payload: Record<string, unknown> = {
-        song_name: newSongName.trim(),
-        position,
-      };
-      if (newSongCover) payload.is_cover = true;
-      if (newSongOriginalArtist.trim()) payload.original_artist = newSongOriginalArtist.trim();
-      if (newSongDuration.trim()) payload.duration = newSongDuration.trim();
-      if (newSongSongwriter.trim()) payload.songwriter = newSongSongwriter.trim();
-      if (newSongWithArtist.trim()) payload.with_artist = newSongWithArtist.trim();
+      // Support comma-separated list of songs for bulk add
+      const songNames = newSongName.includes(',')
+        ? newSongName.split(',').map(s => s.trim()).filter(s => s.length > 0)
+        : [newSongName.trim()];
 
-      const response = await api.post(`/shows/${showId}/setlist`, payload);
+      const newSongs: Song[] = [];
+      let currentPosition = (show.setlist?.length || 0) + 1;
+
+      for (const name of songNames) {
+        const payload: Record<string, unknown> = {
+          song_name: name,
+          position: currentPosition,
+        };
+        // Only apply detail fields when adding a single song
+        if (songNames.length === 1) {
+          if (newSongCover) payload.is_cover = true;
+          if (newSongOriginalArtist.trim()) payload.original_artist = newSongOriginalArtist.trim();
+          if (newSongDuration.trim()) payload.duration = newSongDuration.trim();
+          if (newSongSongwriter.trim()) payload.songwriter = newSongSongwriter.trim();
+          if (newSongWithArtist.trim()) payload.with_artist = newSongWithArtist.trim();
+        }
+
+        const response = await api.post(`/shows/${showId}/setlist`, payload);
+        newSongs.push(response.data);
+        currentPosition++;
+      }
 
       setShow(prev => prev ? {
         ...prev,
-        setlist: [...(prev.setlist || []), response.data]
+        setlist: [...(prev.setlist || []), ...newSongs]
       } : null);
       setNewSongName('');
       setNewSongCover(false);
@@ -861,8 +875,8 @@ export default function ShowDetailPage() {
           {/* Setlist Tab */}
           {activeTab === 'setlist' && (
             <div className="space-y-4">
-              {/* Add Song Form - only for owner, hide for past shows with existing setlist */}
-              {isOwner && !(new Date((show.date || show.show_date || '') + 'T23:59:59') < new Date() && show.setlist && show.setlist.length > 0) && (
+              {/* Add Song Form - only for owner */}
+              {isOwner && (
               <div className="bg-secondary rounded-xl p-4">
                 <div className="flex gap-2">
                   <input
@@ -870,7 +884,7 @@ export default function ShowDetailPage() {
                     value={newSongName}
                     onChange={(e) => setNewSongName(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && addSong()}
-                    placeholder="Add song to setlist..."
+                    placeholder="Add song or comma-separated list..."
                     className="flex-1 px-4 py-3 bg-tertiary text-primary rounded-lg border border-theme focus:outline-none focus:ring-2 focus:ring-accent placeholder:text-muted"
                   />
                   <button
