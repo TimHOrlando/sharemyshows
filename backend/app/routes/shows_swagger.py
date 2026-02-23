@@ -12,6 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from app.models import db, Show, Artist, Venue, SetlistSong, ShowCheckin, User, Photo, AudioRecording, VideoRecording, Comment, get_friend_ids
+from app.utils.concert_archives import fetch_setlist_from_concert_archives
 
 
 def _batch_counts(show_ids):
@@ -488,94 +489,120 @@ class ShowAutoSetlist(Resource):
         # Determine mbid
         data = request.get_json() or {}
         mbid = data.get('mbid') or (show.artist.mbid if show.artist else None)
+        artist_name = show.artist.name if show.artist else None
+        venue_name = show.venue.name if show.venue else None
 
-        if not mbid:
-            print(f'[auto-setlist] Show {show_id}: no MBID available')
-            return {'message': 'No artist MBID available', 'songs_added': 0, 'source': ''}, 200
+        # Phase 1: Try Setlist.fm (requires MBID)
+        songs_from_source = []
+        source_url = ''
 
-        # Convert date to dd-MM-yyyy for Setlist.fm
-        show_date_str = show.date.strftime('%d-%m-%Y')
-        print(f'[auto-setlist] Show {show_id}: looking up mbid={mbid} date={show_date_str}')
+        if mbid:
+            show_date_str = show.date.strftime('%d-%m-%Y')
+            print(f'[auto-setlist] Show {show_id}: looking up mbid={mbid} date={show_date_str}')
 
-        SETLISTFM_API_KEY = os.getenv('SETLISTFM_API_KEY')
-        if not SETLISTFM_API_KEY:
-            print(f'[auto-setlist] Show {show_id}: SETLISTFM_API_KEY not configured')
-            return {'message': 'Setlist.fm not configured', 'songs_added': 0, 'source': ''}, 200
+            SETLISTFM_API_KEY = os.getenv('SETLISTFM_API_KEY')
+            if SETLISTFM_API_KEY:
+                try:
+                    headers = {
+                        'Accept': 'application/json',
+                        'x-api-key': SETLISTFM_API_KEY
+                    }
+                    response = http_requests.get(
+                        'https://api.setlist.fm/rest/1.0/search/setlists',
+                        headers=headers,
+                        params={'artistMbid': mbid, 'date': show_date_str},
+                        timeout=10
+                    )
 
+                    print(f'[auto-setlist] Show {show_id}: Setlist.fm status={response.status_code}')
+                    if response.status_code == 200:
+                        result = response.json()
+                        setlists = result.get('setlist', [])
+                        print(f'[auto-setlist] Show {show_id}: found {len(setlists)} setlist(s)')
+
+                        if setlists:
+                            setlist = setlists[0]
+                            source_url = setlist.get('url', '')
+                            sets_data = setlist.get('sets', {}).get('set', [])
+                            print(f'[auto-setlist] Show {show_id}: setlist has {len(sets_data)} set(s), url={source_url}')
+
+                            for set_item in sets_data:
+                                set_name = set_item.get('name', '')
+                                songs_in_set = set_item.get('song', [])
+                                print(f'[auto-setlist] Show {show_id}: set "{set_name}" has {len(songs_in_set)} song(s)')
+                                if songs_in_set:
+                                    print(f'[auto-setlist] Show {show_id}: first song raw: {songs_in_set[0]}')
+                                for song in songs_in_set:
+                                    song_name = song.get('name', '')
+                                    if not song_name:
+                                        print(f'[auto-setlist] Show {show_id}: skipping song with empty name: {song}')
+                                        continue
+
+                                    notes_parts = []
+                                    if set_name:
+                                        notes_parts.append(set_name)
+                                    if song.get('info'):
+                                        notes_parts.append(song['info'])
+                                    if song.get('tape'):
+                                        notes_parts.append('(from tape)')
+
+                                    cover_data = song.get('cover')
+                                    is_cover = cover_data is not None
+                                    original_artist = cover_data.get('name') if cover_data else None
+
+                                    with_data = song.get('with')
+                                    with_artist = with_data.get('name') if with_data else None
+
+                                    songs_from_source.append({
+                                        'title': song_name,
+                                        'notes': '; '.join(notes_parts) if notes_parts else None,
+                                        'is_cover': is_cover,
+                                        'original_artist': original_artist,
+                                        'with_artist': with_artist,
+                                    })
+                    else:
+                        print(f'[auto-setlist] Show {show_id}: response body={response.text[:500]}')
+                except Exception as e:
+                    print(f'[auto-setlist] Show {show_id}: Setlist.fm error: {e}')
+            else:
+                print(f'[auto-setlist] Show {show_id}: SETLISTFM_API_KEY not configured')
+        else:
+            print(f'[auto-setlist] Show {show_id}: no MBID available, skipping Setlist.fm')
+
+        # Phase 2: Fallback to Concert Archives if Setlist.fm returned nothing
+        if not songs_from_source and artist_name:
+            print(f'[auto-setlist] Show {show_id}: trying Concert Archives fallback...')
+            try:
+                ca_songs = fetch_setlist_from_concert_archives(artist_name, venue_name, show.date)
+                if ca_songs:
+                    songs_from_source = ca_songs
+                    source_url = 'concertarchives.org'
+                    print(f'[auto-setlist] Show {show_id}: Concert Archives returned {len(ca_songs)} songs')
+                else:
+                    print(f'[auto-setlist] Show {show_id}: Concert Archives returned no results')
+            except Exception as e:
+                print(f'[auto-setlist] Show {show_id}: Concert Archives error: {e}')
+
+        if not songs_from_source:
+            return {'message': 'No setlist found for this date', 'songs_added': 0, 'source': ''}, 200
+
+        # Phase 3: Create SetlistSong records from collected data
         try:
-            headers = {
-                'Accept': 'application/json',
-                'x-api-key': SETLISTFM_API_KEY
-            }
-            response = http_requests.get(
-                'https://api.setlist.fm/rest/1.0/search/setlists',
-                headers=headers,
-                params={'artistMbid': mbid, 'date': show_date_str},
-                timeout=10
-            )
-
-            print(f'[auto-setlist] Show {show_id}: Setlist.fm status={response.status_code}')
-            if response.status_code != 200:
-                print(f'[auto-setlist] Show {show_id}: response body={response.text[:500]}')
-                return {'message': 'Setlist.fm lookup returned no results', 'songs_added': 0, 'source': ''}, 200
-
-            result = response.json()
-            setlists = result.get('setlist', [])
-            print(f'[auto-setlist] Show {show_id}: found {len(setlists)} setlist(s)')
-
-            if not setlists:
-                return {'message': 'No setlist found for this date', 'songs_added': 0, 'source': ''}, 200
-
-            # Take the first matching setlist
-            setlist = setlists[0]
-            setlist_url = setlist.get('url', '')
-            sets_data = setlist.get('sets', {}).get('set', [])
-            print(f'[auto-setlist] Show {show_id}: setlist has {len(sets_data)} set(s), url={setlist_url}')
-
-            # Parse songs across all sets
             order = 1
             songs_added = 0
-            for set_item in sets_data:
-                set_name = set_item.get('name', '')
-                songs_in_set = set_item.get('song', [])
-                print(f'[auto-setlist] Show {show_id}: set "{set_name}" has {len(songs_in_set)} song(s)')
-                if songs_in_set:
-                    print(f'[auto-setlist] Show {show_id}: first song raw: {songs_in_set[0]}')
-                for song in songs_in_set:
-                    song_name = song.get('name', '')
-                    if not song_name:
-                        print(f'[auto-setlist] Show {show_id}: skipping song with empty name: {song}')
-                        continue
-
-                    notes_parts = []
-                    if set_name:
-                        notes_parts.append(set_name)
-                    if song.get('info'):
-                        notes_parts.append(song['info'])
-                    if song.get('tape'):
-                        notes_parts.append('(from tape)')
-
-                    # Extract cover info
-                    cover_data = song.get('cover')
-                    is_cover = cover_data is not None
-                    original_artist = cover_data.get('name') if cover_data else None
-
-                    # Extract guest/featured artist
-                    with_data = song.get('with')
-                    with_artist = with_data.get('name') if with_data else None
-
-                    setlist_song = SetlistSong(
-                        show_id=show_id,
-                        title=song_name,
-                        order=order,
-                        notes='; '.join(notes_parts) if notes_parts else None,
-                        is_cover=is_cover,
-                        original_artist=original_artist,
-                        with_artist=with_artist,
-                    )
-                    db.session.add(setlist_song)
-                    order += 1
-                    songs_added += 1
+            for song_data in songs_from_source:
+                setlist_song = SetlistSong(
+                    show_id=show_id,
+                    title=song_data['title'],
+                    order=song_data.get('order', order),
+                    notes=song_data.get('notes'),
+                    is_cover=song_data.get('is_cover', False),
+                    original_artist=song_data.get('original_artist'),
+                    with_artist=song_data.get('with_artist'),
+                )
+                db.session.add(setlist_song)
+                order += 1
+                songs_added += 1
 
             print(f'[auto-setlist] Show {show_id}: committing {songs_added} songs')
             db.session.commit()
@@ -584,7 +611,6 @@ class ShowAutoSetlist(Resource):
             # Backfill durations and songwriter from cache or MusicBrainz
             try:
                 import time as _time
-                artist_name = show.artist.name if show.artist else None
                 artist_id = show.artist_id
                 songs_to_update = SetlistSong.query.filter_by(show_id=show_id).all()
 
@@ -633,13 +659,14 @@ class ShowAutoSetlist(Resource):
                             recordings = mb_resp.json().get('recordings', [])
                             best = None
                             # Prefer: same artist (by MBID) with duration
-                            for r in recordings:
-                                if not r.get('length'):
-                                    continue
-                                r_artist_ids = [a.get('artist', {}).get('id', '') for a in r.get('artist-credit', [])]
-                                if mbid in r_artist_ids:
-                                    best = r
-                                    break
+                            if mbid:
+                                for r in recordings:
+                                    if not r.get('length'):
+                                        continue
+                                    r_artist_ids = [a.get('artist', {}).get('id', '') for a in r.get('artist-credit', [])]
+                                    if mbid in r_artist_ids:
+                                        best = r
+                                        break
                             # Fallback: same artist by name with duration
                             if not best and artist_name:
                                 for r in recordings:
@@ -703,15 +730,13 @@ class ShowAutoSetlist(Resource):
             except Exception as e:
                 print(f'[auto-setlist] Show {show_id}: MusicBrainz duration lookup failed: {e}')
 
+            source_label = 'Concert Archives' if source_url == 'concertarchives.org' else 'Setlist.fm'
             return {
-                'message': f'Added {songs_added} songs from Setlist.fm',
+                'message': f'Added {songs_added} songs from {source_label}',
                 'songs_added': songs_added,
-                'source': setlist_url
+                'source': source_url
             }, 200
 
-        except http_requests.RequestException as e:
-            print(f'[auto-setlist] Show {show_id}: request error: {e}')
-            return {'message': 'Failed to connect to Setlist.fm', 'songs_added': 0, 'source': ''}, 200
         except Exception as e:
             print(f'[auto-setlist] Show {show_id}: unexpected error: {e}')
             db.session.rollback()
