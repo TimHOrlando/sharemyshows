@@ -302,7 +302,6 @@ class DashboardVenues(Resource):
          .filter(Show.user_id == current_user_id)\
          .group_by(Venue.id, Venue.name)\
          .order_by(func.count(Show.id).desc())\
-         .limit(10)\
          .all()
 
         results = [{
