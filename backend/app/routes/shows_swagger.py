@@ -836,6 +836,10 @@ class ShowPresence(Resource):
                     'is_friend': checkin.user_id in friend_ids,
                     'last_seen': checkin.last_location_update.isoformat() if checkin.last_location_update else checkin.checked_in_at.isoformat()
                 }
+                # Include coordinates for friends
+                if checkin.user_id in friend_ids and checkin.latitude is not None:
+                    user_data['latitude'] = checkin.latitude
+                    user_data['longitude'] = checkin.longitude
                 users.append(user_data)
         
         return {'users': users}

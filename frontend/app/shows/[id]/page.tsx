@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Navbar from '@/components/Navbar';
 import SettingsModal from '@/components/SettingsModal';
+import FriendMapModal from '@/components/FriendMapModal';
 import { api } from '@/lib/api';
 import { io, Socket } from 'socket.io-client';
 
@@ -60,7 +61,7 @@ interface Show {
   date: string;
   show_date?: string;
   time?: string;
-  venue?: { id: number; name: string; city?: string; state?: string; address?: string };
+  venue?: { id: number; name: string; city?: string; state?: string; address?: string; latitude?: number; longitude?: number };
   venue_name?: string;
   city?: string;
   state?: string;
@@ -158,6 +159,12 @@ export default function ShowDetailPage() {
   const [, setLocationEnabled] = useState(false);
   const [sharingLocation, setSharingLocation] = useState(false);
 
+  // Friend map state
+  const [friendMapOpen, setFriendMapOpen] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+  const locationEmitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // WebSocket
   const socketRef = useRef<Socket | null>(null);
 
@@ -198,6 +205,29 @@ export default function ShowDetailPage() {
         // Show comment
         setComments(prev => [...prev, data.comment]);
       }
+    });
+
+    // Location sharing events
+    socket.on('location_update', (data: { user_id: number; username: string; latitude: number; longitude: number }) => {
+      setNearbyUsers(prev => {
+        const idx = prev.findIndex(u => u.id === data.user_id);
+        const updated: NearbyUser = {
+          id: data.user_id,
+          username: data.username,
+          last_seen: new Date().toISOString(),
+          is_friend: true,
+        };
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = updated;
+          return next;
+        }
+        return [...prev, updated];
+      });
+    });
+
+    socket.on('location_stopped', (data: { user_id: number }) => {
+      setNearbyUsers(prev => prev.filter(u => u.id !== data.user_id));
     });
 
     socketRef.current = socket;
@@ -432,26 +462,84 @@ export default function ShowDetailPage() {
   const toggleLocationSharing = async () => {
     if (!sharingLocation) {
       try {
+        // Get initial position and start watching
         const position = await new Promise<GeolocationPosition>((resolve, reject) => {
           navigator.geolocation.getCurrentPosition(resolve, reject, {
             enableHighAccuracy: true
           });
         });
 
+        const initialLoc = { lat: position.coords.latitude, lng: position.coords.longitude };
+        setUserLocation(initialLoc);
         setSharingLocation(true);
         setLocationEnabled(true);
 
+        // POST initial presence via REST
         await api.post(`/shows/${showId}/presence`, {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
+          latitude: initialLoc.lat,
+          longitude: initialLoc.lng
         });
+
+        // Emit initial location via WebSocket
+        if (socketRef.current) {
+          socketRef.current.emit('update_location', {
+            show_id: parseInt(showId),
+            latitude: initialLoc.lat,
+            longitude: initialLoc.lng,
+          });
+        }
+
+        // Start continuous watch
+        const watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          },
+          (err) => console.error('Watch position error:', err),
+          { enableHighAccuracy: true }
+        );
+        watchIdRef.current = watchId;
+
+        // Emit location every 20 seconds
+        const intervalId = setInterval(() => {
+          if (socketRef.current) {
+            // Read latest userLocation from a fresh getCurrentPosition to avoid stale closure
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                socketRef.current?.emit('update_location', {
+                  show_id: parseInt(showId),
+                  latitude: pos.coords.latitude,
+                  longitude: pos.coords.longitude,
+                });
+              },
+              () => {}, // ignore errors on interval tick
+              { enableHighAccuracy: true }
+            );
+          }
+        }, 20000);
+        locationEmitIntervalRef.current = intervalId;
+
         fetchNearbyUsers();
       } catch (error) {
         console.error('Location access denied:', error);
         setLocationEnabled(false);
       }
     } else {
+      // Stop sharing
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      if (locationEmitIntervalRef.current) {
+        clearInterval(locationEmitIntervalRef.current);
+        locationEmitIntervalRef.current = null;
+      }
+
       setSharingLocation(false);
+      setUserLocation(null);
+
+      if (socketRef.current) {
+        socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
+      }
       await api.delete(`/shows/${showId}/presence`);
     }
   };
@@ -663,7 +751,7 @@ export default function ShowDetailPage() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Cleanup recording resources on unmount
+  // Cleanup recording and location resources on unmount
   useEffect(() => {
     return () => {
       if (streamRef.current) {
@@ -672,8 +760,18 @@ export default function ShowDetailPage() {
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
       }
+      // Stop location sharing on unmount
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+      if (locationEmitIntervalRef.current) {
+        clearInterval(locationEmitIntervalRef.current);
+      }
+      if (socketRef.current) {
+        socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
+      }
     };
-  }, []);
+  }, [showId]);
 
   // Delete handler
   const handleDelete = async () => {
@@ -727,6 +825,16 @@ export default function ShowDetailPage() {
   };
 
   const isOwner = show?.is_owner !== false;
+
+  const isToday = (() => {
+    const showDate = show?.date || show?.show_date || '';
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return showDate === today;
+  })();
+  const tabs: ('setlist' | 'photos' | 'videos' | 'comments' | 'people')[] = [
+    'setlist', 'photos', 'videos', 'comments', ...(isToday ? ['people' as const] : [])
+  ];
 
   if (loading) {
     return (
@@ -850,7 +958,7 @@ export default function ShowDetailPage() {
 
           {/* Tabs */}
           <div className="flex gap-2 mb-6 border-b border-theme">
-            {(['setlist', 'photos', 'videos', 'comments', ...(show.is_live ? ['people'] : [])] as ('setlist' | 'photos' | 'videos' | 'comments' | 'people')[]).map((tab) => (
+            {tabs.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -864,7 +972,7 @@ export default function ShowDetailPage() {
                 {tab === 'photos' && `Photos (${show.photos?.length || 0})`}
                 {tab === 'videos' && `Videos (${show.videos?.length || 0})`}
                 {tab === 'comments' && `Comments (${comments.length})`}
-                {tab === 'people' && 'People Here'}
+                {tab === 'people' && 'Friends Here'}
                 {activeTab === tab && (
                   <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent"></span>
                 )}
@@ -1493,18 +1601,18 @@ export default function ShowDetailPage() {
               </div>
 
               {sharingLocation ? (
-                nearbyUsers.length > 0 ? (
+                nearbyUsers.filter(u => u.is_friend).length > 0 ? (
                   <div className="bg-secondary rounded-xl overflow-hidden">
                     <div className="px-4 py-3 border-b border-theme">
-                      <h3 className="font-medium text-primary">People at this show</h3>
+                      <h3 className="font-medium text-primary">Friends at this show</h3>
                     </div>
-                    {nearbyUsers.map((person) => (
+                    {nearbyUsers.filter(u => u.is_friend).map((person) => (
                       <div
                         key={person.id}
                         className="flex items-center gap-4 px-4 py-3 border-b border-theme last:border-b-0 hover:bg-tertiary transition-colors"
                       >
-                        <div className="w-10 h-10 rounded-full bg-tertiary flex items-center justify-center">
-                          <span className="text-sm font-medium text-primary">
+                        <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
+                          <span className="text-sm font-bold text-accent">
                             {person.username.charAt(0).toUpperCase()}
                           </span>
                         </div>
@@ -1514,15 +1622,9 @@ export default function ShowDetailPage() {
                             <p className="text-sm text-muted">{person.distance} away</p>
                           )}
                         </div>
-                        {person.is_friend ? (
-                          <span className="px-3 py-1 text-xs font-medium text-accent bg-accent/20 rounded-full">
-                            Friend
-                          </span>
-                        ) : (
-                          <button className="px-3 py-1 text-xs font-medium text-secondary hover:text-primary bg-tertiary hover:bg-hover rounded-full transition-colors">
-                            Add Friend
-                          </button>
-                        )}
+                        <span className="px-3 py-1 text-xs font-medium text-accent bg-accent/20 rounded-full">
+                          Friend
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -1532,8 +1634,8 @@ export default function ShowDetailPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                     </svg>
-                    <p className="text-secondary">No one else here yet</p>
-                    <p className="text-sm text-muted mt-1">Be the first to check in!</p>
+                    <p className="text-secondary">No friends here yet</p>
+                    <p className="text-sm text-muted mt-1">Friends sharing their location will appear here</p>
                   </div>
                 )
               ) : (
@@ -1552,7 +1654,10 @@ export default function ShowDetailPage() {
                   <p className="text-sm text-muted mb-4">
                     Friends who are sharing their location at this show will appear here with directions to find them.
                   </p>
-                  <button className="w-full px-4 py-3 bg-tertiary text-secondary hover:text-primary rounded-lg transition-colors flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => setFriendMapOpen(true)}
+                    className="w-full px-4 py-3 bg-tertiary text-secondary hover:text-primary rounded-lg transition-colors flex items-center justify-center gap-2"
+                  >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
                     </svg>
@@ -1780,6 +1885,19 @@ export default function ShowDetailPage() {
             </div>
           </div>
         )}
+
+        <FriendMapModal
+          isOpen={friendMapOpen}
+          onClose={() => setFriendMapOpen(false)}
+          showId={parseInt(showId)}
+          socket={socketRef.current}
+          userLocation={userLocation}
+          venueLocation={
+            show.venue?.latitude && show.venue?.longitude
+              ? { lat: show.venue.latitude, lng: show.venue.longitude }
+              : null
+          }
+        />
 
         <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
       </div>

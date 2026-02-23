@@ -6,7 +6,7 @@ Handles real-time chat and user presence for shows
 from flask_socketio import SocketIO, emit, join_room, leave_room, rooms
 from flask import request
 from flask_jwt_extended import decode_token
-from app.models import db, ChatMessage, ShowCheckin, User, Show
+from app.models import db, ChatMessage, ShowCheckin, User, Show, get_friend_ids
 from datetime import datetime
 import os
 
@@ -76,13 +76,39 @@ def handle_connect():
 def handle_disconnect():
     """Handle client disconnection"""
     user = get_user_from_token()
-    
+
     if user:
+        friend_ids = get_friend_ids(user.id)
+
         # Remove user from all show rooms
         for show_id in list(active_users.keys()):
             if user.id in active_users[show_id]:
+                # Clear location in DB and notify friends before removing
+                try:
+                    checkin = ShowCheckin.query.filter_by(
+                        user_id=user.id,
+                        show_id=show_id,
+                        is_active=True
+                    ).first()
+                    if checkin and checkin.latitude is not None:
+                        checkin.latitude = None
+                        checkin.longitude = None
+                        checkin.last_location_update = None
+                        db.session.commit()
+
+                        # Notify friends in this show room
+                        for friend_id, info in active_users[show_id].items():
+                            if friend_id in friend_ids:
+                                emit('location_stopped', {
+                                    'user_id': user.id,
+                                    'username': user.username
+                                }, to=info['sid'])
+                except Exception as e:
+                    db.session.rollback()
+                    print(f"Error clearing location on disconnect: {e}")
+
                 del active_users[show_id][user.id]
-                
+
                 # Clean up empty show rooms
                 if not active_users[show_id]:
                     del active_users[show_id]
@@ -93,7 +119,7 @@ def handle_disconnect():
                         'username': user.username,
                         'active_users': list(active_users[show_id].values())
                     }, room=f'show_{show_id}')
-        
+
         print(f"Client disconnected: {user.username} (sid: {request.sid})")
 
 
@@ -357,6 +383,143 @@ def handle_get_active_users(data):
         'active_users': users,
         'count': len(users)
     })
+
+
+@socketio.on('update_location')
+def handle_update_location(data):
+    """Handle user sharing their live location at a show"""
+    user = get_user_from_token()
+
+    if not user:
+        emit('error', {'message': 'Unauthorized'})
+        return
+
+    show_id = data.get('show_id')
+    latitude = data.get('latitude')
+    longitude = data.get('longitude')
+
+    if not show_id or latitude is None or longitude is None:
+        emit('error', {'message': 'Missing show_id, latitude, or longitude'})
+        return
+
+    try:
+        checkin = ShowCheckin.query.filter_by(
+            user_id=user.id,
+            show_id=show_id,
+            is_active=True
+        ).first()
+
+        if not checkin:
+            emit('error', {'message': 'Not checked in to this show'})
+            return
+
+        checkin.latitude = latitude
+        checkin.longitude = longitude
+        checkin.last_location_update = datetime.utcnow()
+        db.session.commit()
+
+        # Emit location only to accepted friends in the same show room
+        friend_ids = get_friend_ids(user.id)
+        if show_id in active_users:
+            for friend_id, info in active_users[show_id].items():
+                if friend_id in friend_ids:
+                    emit('location_update', {
+                        'user_id': user.id,
+                        'username': user.username,
+                        'latitude': latitude,
+                        'longitude': longitude,
+                        'updated_at': checkin.last_location_update.isoformat()
+                    }, to=info['sid'])
+
+    except Exception as e:
+        db.session.rollback()
+        emit('error', {'message': 'Failed to update location', 'details': str(e)})
+        print(f"Error updating location: {e}")
+
+
+@socketio.on('stop_location')
+def handle_stop_location(data):
+    """Handle user stopping location sharing"""
+    user = get_user_from_token()
+
+    if not user:
+        emit('error', {'message': 'Unauthorized'})
+        return
+
+    show_id = data.get('show_id')
+
+    if not show_id:
+        emit('error', {'message': 'Missing show_id'})
+        return
+
+    try:
+        checkin = ShowCheckin.query.filter_by(
+            user_id=user.id,
+            show_id=show_id,
+            is_active=True
+        ).first()
+
+        if checkin:
+            checkin.latitude = None
+            checkin.longitude = None
+            checkin.last_location_update = None
+            db.session.commit()
+
+        # Notify friends in the show room
+        friend_ids = get_friend_ids(user.id)
+        if show_id in active_users:
+            for friend_id, info in active_users[show_id].items():
+                if friend_id in friend_ids:
+                    emit('location_stopped', {
+                        'user_id': user.id,
+                        'username': user.username
+                    }, to=info['sid'])
+
+    except Exception as e:
+        db.session.rollback()
+        emit('error', {'message': 'Failed to stop location', 'details': str(e)})
+        print(f"Error stopping location: {e}")
+
+
+@socketio.on('get_friends_locations')
+def handle_get_friends_locations(data):
+    """Get locations of friends checked into the same show"""
+    user = get_user_from_token()
+
+    if not user:
+        emit('error', {'message': 'Unauthorized'})
+        return
+
+    show_id = data.get('show_id')
+
+    if not show_id:
+        emit('error', {'message': 'Missing show_id'})
+        return
+
+    friend_ids = get_friend_ids(user.id)
+
+    # Query active checkins with location data for friends at this show
+    checkins = ShowCheckin.query.filter(
+        ShowCheckin.show_id == show_id,
+        ShowCheckin.is_active == True,
+        ShowCheckin.latitude.isnot(None),
+        ShowCheckin.longitude.isnot(None),
+        ShowCheckin.user_id.in_(friend_ids)
+    ).all()
+
+    friends = []
+    for checkin in checkins:
+        friend = User.query.get(checkin.user_id)
+        if friend:
+            friends.append({
+                'user_id': friend.id,
+                'username': friend.username,
+                'latitude': checkin.latitude,
+                'longitude': checkin.longitude,
+                'updated_at': checkin.last_location_update.isoformat() if checkin.last_location_update else None
+            })
+
+    emit('friends_locations', {'friends': friends})
 
 
 # Error handler
