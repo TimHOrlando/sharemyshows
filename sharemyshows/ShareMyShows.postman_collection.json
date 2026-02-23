@@ -1,0 +1,498 @@
+{
+  "info": {
+    "name": "ShareMyShows API",
+    "description": "API endpoints for ShareMyShows Phase 1",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000/api",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refresh_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john@example.com\",\n  \"username\": \"johndoe\",\n  \"password\": \"SecurePass123!\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "pm.collectionVariables.set(\"access_token\", jsonData.access_token);",
+                  "pm.collectionVariables.set(\"refresh_token\", jsonData.refresh_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"john@example.com\",\n  \"password\": \"SecurePass123!\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get Current User",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"Music enthusiast\",\n  \"location\": \"New York, NY\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{refresh_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "refresh"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Artists",
+      "item": [
+        {
+          "name": "List Artists",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/artists?page=1&per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["artists"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Artist",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/artists/1",
+              "host": ["{{base_url}}"],
+              "path": ["artists", "1"]
+            }
+          }
+        },
+        {
+          "name": "Create Artist",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Taylor Swift\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/artists",
+              "host": ["{{base_url}}"],
+              "path": ["artists"]
+            }
+          }
+        },
+        {
+          "name": "Search Artists",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/artists/search?q=taylor&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["artists", "search"],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "taylor"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Venues",
+      "item": [
+        {
+          "name": "List Venues",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/venues?page=1&per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["venues"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Venue",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/venues/1",
+              "host": ["{{base_url}}"],
+              "path": ["venues", "1"]
+            }
+          }
+        },
+        {
+          "name": "Create Venue",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Madison Square Garden\",\n  \"location\": \"4 Pennsylvania Plaza, New York, NY 10001\",\n  \"city\": \"New York\",\n  \"state\": \"NY\",\n  \"country\": \"USA\",\n  \"latitude\": 40.7505,\n  \"longitude\": -73.9934\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/venues",
+              "host": ["{{base_url}}"],
+              "path": ["venues"]
+            }
+          }
+        },
+        {
+          "name": "Search Venues",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/venues/search?q=madison&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["venues", "search"],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "madison"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Nearby Venues",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/venues/nearby?latitude=40.7505&longitude=-73.9934&radius=10&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["venues", "nearby"],
+              "query": [
+                {
+                  "key": "latitude",
+                  "value": "40.7505"
+                },
+                {
+                  "key": "longitude",
+                  "value": "-73.9934"
+                },
+                {
+                  "key": "radius",
+                  "value": "10"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Shows",
+      "item": [
+        {
+          "name": "List Shows",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/shows?page=1&per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["shows"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Show",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/shows/1",
+              "host": ["{{base_url}}"],
+              "path": ["shows", "1"]
+            }
+          }
+        },
+        {
+          "name": "Create Show",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"venue_id\": 1,\n  \"show_date\": \"2024-12-31\",\n  \"show_time\": \"20:00:00\",\n  \"title\": \"New Year's Eve Concert\",\n  \"notes\": \"Amazing show!\",\n  \"is_public\": true,\n  \"artist_ids\": [1]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/shows",
+              "host": ["{{base_url}}"],
+              "path": ["shows"]
+            }
+          }
+        },
+        {
+          "name": "Update Show",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Updated Title\",\n  \"notes\": \"Updated notes\",\n  \"is_public\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/shows/1",
+              "host": ["{{base_url}}"],
+              "path": ["shows", "1"]
+            }
+          }
+        },
+        {
+          "name": "Delete Show",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shows/1",
+              "host": ["{{base_url}}"],
+              "path": ["shows", "1"]
+            }
+          }
+        },
+        {
+          "name": "Get My Shows",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/shows/my-shows?page=1&per_page=20",
+              "host": ["{{base_url}}"],
+              "path": ["shows", "my-shows"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sharemyshows-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: sharemyshows
+      MYSQL_USER: sms_user
+      MYSQL_PASSWORD: sms_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sharemyshows-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Uncomment when ready to add Celery workers
+  # celery-worker:
+  #   build: ./backend
+  #   container_name: sharemyshows-celery-worker
+  #   command: celery -A app.celery worker --loglevel=info
+  #   depends_on:
+  #     - redis
+  #     - mysql
+  #   environment:
+  #     - DATABASE_URL=mysql+pymysql://sms_user:sms_password@mysql:3306/sharemyshows
+  #     - REDIS_URL=redis://redis:6379/0
+  #   volumes:
+  #     - ./backend:/app
+
+  # celery-beat:
+  #   build: ./backend
+  #   container_name: sharemyshows-celery-beat
+  #   command: celery -A app.celery beat --loglevel=info
+  #   depends_on:
+  #     - redis
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379/0
+  #   volumes:
+  #     - ./backend:/app
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    name: sharemyshows-network
