@@ -230,29 +230,30 @@ export default function FriendMapModal({
                     strokeWeight: 2,
                     labelOrigin: new google.maps.Point(0, 0),
                   }}
-                />
-              ))}
-
-              {/* InfoWindow for selected friend */}
-              {selectedFriend && (
-                <InfoWindow
-                  position={{ lat: selectedFriend.latitude, lng: selectedFriend.longitude }}
-                  onCloseClick={() => {
-                    setSelectedFriend(null);
-                    setDirections(null);
-                    setWalkingInfo(null);
-                  }}
                 >
-                  <div style={{ color: '#333', minWidth: '120px' }}>
-                    <p style={{ fontWeight: 'bold', marginBottom: '4px' }}>{selectedFriend.username}</p>
-                    {walkingInfo && (
-                      <p style={{ fontSize: '13px', margin: 0 }}>
-                        {walkingInfo.distance} &middot; {walkingInfo.duration} walk
-                      </p>
-                    )}
-                  </div>
-                </InfoWindow>
-              )}
+                  {selectedFriend?.user_id === friend.user_id && (
+                    <InfoWindow
+                      onCloseClick={() => {
+                        setSelectedFriend(null);
+                        setDirections(null);
+                        setWalkingInfo(null);
+                      }}
+                      options={{
+                        pixelOffset: new google.maps.Size(0, -8),
+                      }}
+                    >
+                      <div style={{ color: '#333', minWidth: '140px', padding: '2px' }}>
+                        <p style={{ fontWeight: 'bold', fontSize: '14px', marginBottom: '4px' }}>{friend.username}</p>
+                        {walkingInfo && (
+                          <p style={{ fontSize: '13px', color: '#666', margin: 0 }}>
+                            {walkingInfo.distance} &middot; {walkingInfo.duration} walk
+                          </p>
+                        )}
+                      </div>
+                    </InfoWindow>
+                  )}
+                </Marker>
+              ))}
 
               {/* Walking directions */}
               {directions && (

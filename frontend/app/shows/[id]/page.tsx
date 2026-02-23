@@ -165,6 +165,16 @@ export default function ShowDetailPage() {
   const watchIdRef = useRef<number | null>(null);
   const locationEmitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Toast notification state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'info' = 'info') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
+  };
+
   // WebSocket
   const socketRef = useRef<Socket | null>(null);
 
@@ -459,90 +469,117 @@ export default function ShowDetailPage() {
   };
 
   // Location/presence functions
-  const toggleLocationSharing = async () => {
-    if (!sharingLocation) {
-      try {
-        // Get initial position and start watching
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true
-          });
+  const startLocationTracking = async (isResume = false) => {
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true
         });
+      });
 
-        const initialLoc = { lat: position.coords.latitude, lng: position.coords.longitude };
-        setUserLocation(initialLoc);
-        setSharingLocation(true);
-        setLocationEnabled(true);
+      const initialLoc = { lat: position.coords.latitude, lng: position.coords.longitude };
+      setUserLocation(initialLoc);
+      setSharingLocation(true);
+      setLocationEnabled(true);
 
-        // POST initial presence via REST
-        await api.post(`/shows/${showId}/presence`, {
-          latitude: initialLoc.lat,
-          longitude: initialLoc.lng
-        });
+      // POST presence via REST
+      await api.post(`/shows/${showId}/presence`, {
+        latitude: initialLoc.lat,
+        longitude: initialLoc.lng
+      });
 
-        // Emit initial location via WebSocket
-        if (socketRef.current) {
-          socketRef.current.emit('update_location', {
-            show_id: parseInt(showId),
-            latitude: initialLoc.lat,
-            longitude: initialLoc.lng,
-          });
-        }
-
-        // Start continuous watch
-        const watchId = navigator.geolocation.watchPosition(
-          (pos) => {
-            setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-          },
-          (err) => console.error('Watch position error:', err),
-          { enableHighAccuracy: true }
-        );
-        watchIdRef.current = watchId;
-
-        // Emit location every 20 seconds
-        const intervalId = setInterval(() => {
-          if (socketRef.current) {
-            // Read latest userLocation from a fresh getCurrentPosition to avoid stale closure
-            navigator.geolocation.getCurrentPosition(
-              (pos) => {
-                socketRef.current?.emit('update_location', {
-                  show_id: parseInt(showId),
-                  latitude: pos.coords.latitude,
-                  longitude: pos.coords.longitude,
-                });
-              },
-              () => {}, // ignore errors on interval tick
-              { enableHighAccuracy: true }
-            );
-          }
-        }, 20000);
-        locationEmitIntervalRef.current = intervalId;
-
-        fetchNearbyUsers();
-      } catch (error) {
-        console.error('Location access denied:', error);
-        setLocationEnabled(false);
-      }
-    } else {
-      // Stop sharing
-      if (watchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-        watchIdRef.current = null;
-      }
-      if (locationEmitIntervalRef.current) {
-        clearInterval(locationEmitIntervalRef.current);
-        locationEmitIntervalRef.current = null;
-      }
-
-      setSharingLocation(false);
-      setUserLocation(null);
-
+      // Emit location via WebSocket
       if (socketRef.current) {
-        socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
+        socketRef.current.emit('update_location', {
+          show_id: parseInt(showId),
+          latitude: initialLoc.lat,
+          longitude: initialLoc.lng,
+        });
       }
-      await api.delete(`/shows/${showId}/presence`);
+
+      // Start continuous watch
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        },
+        (err) => console.error('Watch position error:', err),
+        { enableHighAccuracy: true }
+      );
+      watchIdRef.current = watchId;
+
+      // Emit location every 20 seconds
+      const intervalId = setInterval(() => {
+        if (socketRef.current) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              socketRef.current?.emit('update_location', {
+                show_id: parseInt(showId),
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+              });
+            },
+            () => {},
+            { enableHighAccuracy: true }
+          );
+        }
+      }, 20000);
+      locationEmitIntervalRef.current = intervalId;
+
+      // Persist state
+      localStorage.setItem(`sharing_location_${showId}`, 'true');
+
+      fetchNearbyUsers();
+
+      if (!isResume) {
+        showToast('Location sharing enabled', 'success');
+      }
+    } catch (error) {
+      console.error('Location access denied:', error);
+      setLocationEnabled(false);
+      localStorage.removeItem(`sharing_location_${showId}`);
+      if (isResume) {
+        setSharingLocation(false);
+      }
     }
   };
+
+  const stopLocationTracking = async () => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (locationEmitIntervalRef.current) {
+      clearInterval(locationEmitIntervalRef.current);
+      locationEmitIntervalRef.current = null;
+    }
+
+    setSharingLocation(false);
+    setUserLocation(null);
+    localStorage.removeItem(`sharing_location_${showId}`);
+
+    if (socketRef.current) {
+      socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
+    }
+    await api.delete(`/shows/${showId}/presence`);
+
+    showToast('Location sharing disabled', 'info');
+  };
+
+  const toggleLocationSharing = async () => {
+    if (!sharingLocation) {
+      await startLocationTracking();
+    } else {
+      await stopLocationTracking();
+    }
+  };
+
+  // Resume location sharing on mount if previously active
+  useEffect(() => {
+    const wasSharing = localStorage.getItem(`sharing_location_${showId}`);
+    if (wasSharing === 'true') {
+      startLocationTracking(true);
+    }
+  }, [showId]);
 
   const fetchNearbyUsers = async () => {
     try {
@@ -760,15 +797,16 @@ export default function ShowDetailPage() {
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current);
       }
-      // Stop location sharing on unmount
+      // Clean up JS resources but don't stop location sharing on server
+      // (user must explicitly toggle it off)
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
       }
       if (locationEmitIntervalRef.current) {
         clearInterval(locationEmitIntervalRef.current);
       }
-      if (socketRef.current) {
-        socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
       }
     };
   }, [showId]);
@@ -778,6 +816,10 @@ export default function ShowDetailPage() {
     if (!confirm('Are you sure you want to delete this show? This cannot be undone.')) return;
     setIsDeleting(true);
     try {
+      // Clean up location sharing before deleting
+      if (sharingLocation) {
+        await stopLocationTracking();
+      }
       await api.delete(`/shows/${showId}`);
       router.push('/shows');
     } catch (error) {
@@ -972,13 +1014,37 @@ export default function ShowDetailPage() {
                 {tab === 'photos' && `Photos (${show.photos?.length || 0})`}
                 {tab === 'videos' && `Videos (${show.videos?.length || 0})`}
                 {tab === 'comments' && `Comments (${comments.length})`}
-                {tab === 'people' && 'Friends Here'}
+                {tab === 'people' && (
+                  <span className="flex items-center gap-1.5">
+                    Friends Here
+                    {sharingLocation && (
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                      </span>
+                    )}
+                  </span>
+                )}
                 {activeTab === tab && (
                   <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent"></span>
                 )}
               </button>
             ))}
           </div>
+
+          {/* Location sharing banner - visible on all tabs */}
+          {sharingLocation && activeTab !== 'people' && (
+            <button
+              onClick={() => setActiveTab('people')}
+              className="w-full mb-4 flex items-center gap-2 px-4 py-2 bg-green-500/10 border border-green-500/30 rounded-lg text-sm text-green-400 hover:bg-green-500/20 transition-colors"
+            >
+              <span className="relative flex h-2 w-2 flex-shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+              </span>
+              Sharing your location &middot; Tap to view Friends Here
+            </button>
+          )}
 
           {/* Setlist Tab */}
           {activeTab === 'setlist' && (
@@ -1587,12 +1653,12 @@ export default function ShowDetailPage() {
                   </div>
                   <button
                     onClick={toggleLocationSharing}
-                    className={`relative w-14 h-8 rounded-full transition-colors ${
+                    className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors flex-shrink-0 ${
                       sharingLocation ? 'bg-accent' : 'bg-tertiary'
                     }`}
                   >
                     <span
-                      className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-transform ${
+                      className={`inline-block h-6 w-6 transform rounded-full bg-white shadow-md transition-transform ${
                         sharingLocation ? 'translate-x-7' : 'translate-x-1'
                       }`}
                     />
@@ -1900,6 +1966,26 @@ export default function ShowDetailPage() {
         />
 
         <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+
+        {/* Toast notification */}
+        {toast && (
+          <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium text-white ${
+            toast.type === 'success' ? 'bg-green-600' : 'bg-gray-700'
+          }`}>
+            <div className="flex items-center gap-2">
+              {toast.type === 'success' ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              {toast.message}
+            </div>
+          </div>
+        )}
       </div>
     </ProtectedRoute>
   );

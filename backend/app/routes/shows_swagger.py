@@ -803,14 +803,21 @@ class ShowPresence(Resource):
     @api.doc('get_show_presence', security='jwt')
     @jwt_required()
     def get(self, show_id):
-        """Get users currently at this show"""
+        """Get users currently at this show (includes users checked into any show for the same concert)"""
         current_user_id = int(get_jwt_identity())
         show = Show.query.get_or_404(show_id)
-        
-        # Get active checkins with location
-        checkins = ShowCheckin.query.filter_by(
-            show_id=show_id,
-            is_active=True
+
+        # Find all shows for the same concert (same artist, venue, date)
+        sibling_show_ids = [s.id for s in Show.query.filter_by(
+            artist_id=show.artist_id,
+            venue_id=show.venue_id,
+            date=show.date
+        ).all()]
+
+        # Get active checkins with location across all sibling shows
+        checkins = ShowCheckin.query.filter(
+            ShowCheckin.show_id.in_(sibling_show_ids),
+            ShowCheckin.is_active == True
         ).all()
         
         # Get current user's friends for friend status

@@ -23,6 +23,19 @@ socketio = SocketIO(
 active_users = {}
 
 
+def get_sibling_show_ids(show_id):
+    """Get all show IDs for the same concert (same artist, venue, date)."""
+    show = Show.query.get(show_id)
+    if not show:
+        return [show_id]
+    siblings = Show.query.filter_by(
+        artist_id=show.artist_id,
+        venue_id=show.venue_id,
+        date=show.date
+    ).with_entities(Show.id).all()
+    return [s.id for s in siblings]
+
+
 def init_socketio(app):
     """Initialize SocketIO with the Flask app"""
     socketio.init_app(app)
@@ -96,13 +109,16 @@ def handle_disconnect():
                         checkin.last_location_update = None
                         db.session.commit()
 
-                        # Notify friends in this show room
-                        for friend_id, info in active_users[show_id].items():
-                            if friend_id in friend_ids:
-                                emit('location_stopped', {
-                                    'user_id': user.id,
-                                    'username': user.username
-                                }, to=info['sid'])
+                        # Notify friends across sibling shows (same concert)
+                        sibling_ids = get_sibling_show_ids(show_id)
+                        for sid in sibling_ids:
+                            if sid in active_users:
+                                for friend_id, info in active_users[sid].items():
+                                    if friend_id in friend_ids:
+                                        emit('location_stopped', {
+                                            'user_id': user.id,
+                                            'username': user.username
+                                        }, to=info['sid'])
                 except Exception as e:
                     db.session.rollback()
                     print(f"Error clearing location on disconnect: {e}")
@@ -418,18 +434,20 @@ def handle_update_location(data):
         checkin.last_location_update = datetime.utcnow()
         db.session.commit()
 
-        # Emit location only to accepted friends in the same show room
+        # Emit location to accepted friends across all sibling shows (same concert)
         friend_ids = get_friend_ids(user.id)
-        if show_id in active_users:
-            for friend_id, info in active_users[show_id].items():
-                if friend_id in friend_ids:
-                    emit('location_update', {
-                        'user_id': user.id,
-                        'username': user.username,
-                        'latitude': latitude,
-                        'longitude': longitude,
-                        'updated_at': checkin.last_location_update.isoformat()
-                    }, to=info['sid'])
+        sibling_ids = get_sibling_show_ids(show_id)
+        for sid in sibling_ids:
+            if sid in active_users:
+                for friend_id, info in active_users[sid].items():
+                    if friend_id in friend_ids:
+                        emit('location_update', {
+                            'user_id': user.id,
+                            'username': user.username,
+                            'latitude': latitude,
+                            'longitude': longitude,
+                            'updated_at': checkin.last_location_update.isoformat()
+                        }, to=info['sid'])
 
     except Exception as e:
         db.session.rollback()
@@ -465,15 +483,17 @@ def handle_stop_location(data):
             checkin.last_location_update = None
             db.session.commit()
 
-        # Notify friends in the show room
+        # Notify friends across all sibling shows (same concert)
         friend_ids = get_friend_ids(user.id)
-        if show_id in active_users:
-            for friend_id, info in active_users[show_id].items():
-                if friend_id in friend_ids:
-                    emit('location_stopped', {
-                        'user_id': user.id,
-                        'username': user.username
-                    }, to=info['sid'])
+        sibling_ids = get_sibling_show_ids(show_id)
+        for sid in sibling_ids:
+            if sid in active_users:
+                for friend_id, info in active_users[sid].items():
+                    if friend_id in friend_ids:
+                        emit('location_stopped', {
+                            'user_id': user.id,
+                            'username': user.username
+                        }, to=info['sid'])
 
     except Exception as e:
         db.session.rollback()
@@ -497,10 +517,11 @@ def handle_get_friends_locations(data):
         return
 
     friend_ids = get_friend_ids(user.id)
+    sibling_ids = get_sibling_show_ids(show_id)
 
-    # Query active checkins with location data for friends at this show
+    # Query active checkins with location data for friends at this concert
     checkins = ShowCheckin.query.filter(
-        ShowCheckin.show_id == show_id,
+        ShowCheckin.show_id.in_(sibling_ids),
         ShowCheckin.is_active == True,
         ShowCheckin.latitude.isnot(None),
         ShowCheckin.longitude.isnot(None),
