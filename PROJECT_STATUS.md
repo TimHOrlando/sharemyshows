@@ -1,6 +1,6 @@
 # ShareMyShows - Project Status
 
-**Last Updated:** February 22, 2026
+**Last Updated:** February 23, 2026
 
 ---
 
@@ -45,6 +45,15 @@
 - Comments on shows and photos (authorization: owner or accepted friend)
 - Real-time chat per show via WebSocket (persisted to DB, last 50 on join)
 - Typing indicators
+- Direct messaging between friends (conversations, read receipts, typing indicators)
+
+**Friend Online/Offline Presence**
+- Global online tracking via WebSocket connections (multi-tab safe, set of SIDs per user)
+- `friend_online` / `friend_offline` real-time events to accepted friends
+- `GET /friends/online` REST endpoint for initial page load
+- Appear Offline: `appear_offline` column on User model, persisted to DB
+- `PUT /auth/profile/appear-offline` REST endpoint
+- `set_appear_offline` socket event for live toggle (updates DB + broadcasts immediately)
 
 **Find My Friends (Location Sharing)**
 - Live GPS sharing at shows via WebSocket (`update_location` / `stop_location`)
@@ -66,7 +75,7 @@
 - MusicBrainz: song duration + songwriter lookup
 
 **Infrastructure**
-- 67+ documented API endpoints across 10 namespaces
+- 69+ documented API endpoints across 10 namespaces
 - Full Swagger UI at `/api/docs`
 - Flask-SocketIO with eventlet async mode
 - SQLite (dev) with Flask-Migrate for schema management
@@ -90,23 +99,27 @@
 - `/comments` - All comments across shows
 - `/artists` - Top artists by show count
 - `/venues` - Top venues by show count
-- `/friends` - Friends list, pending requests, user search
+- `/friends` - Friends list, pending requests, user search, online indicators, Appear Offline toggle
+- `/messages` - Direct messaging with conversation list, real-time delivery, read receipts, online indicators
 
 **Components**
 - `Navbar` - Top navigation with auth state and user menu
 - `AddShowModal` - Multi-step: venue search (Google Places) -> artist search (Setlist.fm) -> date/notes/rating
 - `ProtectedRoute` - Auth guard with login redirect
 - `ThemeSwitcher` - 7-theme selector using CSS variables
-- `SettingsModal` - Theme, MFA toggle, password change, logout
+- `SettingsModal` - Theme, MFA toggle, password change, Privacy (Appear Offline), logout
 - `FriendMapModal` - Google Maps with friend markers, walking directions, InfoWindow
+- `LocationSharePickerModal` - Selective friend location sharing picker
 - `PasswordRequirements` - Real-time password strength indicator
 
 **Real-time Features**
 - WebSocket connection per show (chat, presence, typing indicators)
 - Continuous GPS tracking with `watchPosition` + 20s emit interval
-- Friends Here tab (today's shows only, accepted friends only)
+- Friends Here tab (today's shows only, accepted friends only) with online/offline badges
 - View Friends on Map with Google Maps integration
 - Walking directions to selected friend (Google Directions API)
+- Friend online/offline presence on Friends page, Messages page, and Friends Here tab
+- Appear Offline quick toggle on Friends page + persistent toggle in Settings
 
 **Theming**
 - CSS variable-based system (bg-primary, text-accent, etc.)
@@ -125,7 +138,10 @@
 
 ## In Progress
 
-*No features currently in active development.*
+**Friend Online/Offline Presence (frontend debugging)**
+- Backend tracking and events fully implemented and multi-tab safe
+- Frontend UI (green/gray dots, badges, toggles) all wired up
+- Investigating: presence events not reaching clients reliably — likely related to eventlet/werkzeug WebSocket transport upgrade failure causing fallback to polling; SID-targeted emits may not reach polling-transport connections correctly
 
 ---
 
