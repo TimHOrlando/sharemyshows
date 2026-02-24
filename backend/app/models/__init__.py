@@ -393,6 +393,67 @@ class ShowCheckin(db.Model):
             'is_active': self.is_active
         }
 
+class Conversation(db.Model):
+    """Direct message conversation between two users"""
+    __tablename__ = 'conversations'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user1_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    user2_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user1 = db.relationship('User', foreign_keys=[user1_id])
+    user2 = db.relationship('User', foreign_keys=[user2_id])
+    messages = db.relationship('DirectMessage', backref='conversation', lazy='dynamic',
+                               cascade='all, delete-orphan', order_by='DirectMessage.created_at')
+
+    __table_args__ = (
+        db.UniqueConstraint('user1_id', 'user2_id', name='unique_conversation'),
+        db.CheckConstraint('user1_id < user2_id', name='ordered_user_ids'),
+    )
+
+    def other_user(self, current_user_id):
+        """Return the other user in the conversation"""
+        if self.user1_id == current_user_id:
+            return self.user2
+        return self.user1
+
+    def to_dict(self, current_user_id=None):
+        other = self.other_user(current_user_id) if current_user_id else None
+        return {
+            'id': self.id,
+            'other_user': {'id': other.id, 'username': other.username} if other else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DirectMessage(db.Model):
+    """Direct message between two users"""
+    __tablename__ = 'direct_messages'
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
+    sender_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    read_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    sender = db.relationship('User', foreign_keys=[sender_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'conversation_id': self.conversation_id,
+            'sender_id': self.sender_id,
+            'sender': {'id': self.sender.id, 'username': self.sender.username} if self.sender else None,
+            'body': self.body,
+            'read_at': self.read_at.isoformat() if self.read_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class ChatMessage(db.Model):
     """Chat message model"""
     __tablename__ = 'chat_messages'

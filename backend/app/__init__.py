@@ -157,6 +157,12 @@ def create_app(config_name='development'):
         except ImportError:
             pass
     
+    try:
+        from app.routes.dm_swagger import api as dm_ns
+        api.add_namespace(dm_ns, path='/dm')
+    except ImportError:
+        pass
+
     # Import WebSocket events
     from app import socket_events
     

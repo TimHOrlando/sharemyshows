@@ -6,7 +6,7 @@ Handles real-time chat and user presence for shows
 from flask_socketio import SocketIO, emit, join_room, leave_room, rooms
 from flask import request
 from flask_jwt_extended import decode_token
-from app.models import db, ChatMessage, ShowCheckin, User, Show, get_friend_ids
+from app.models import db, ChatMessage, ShowCheckin, User, Show, Conversation, DirectMessage, get_friend_ids
 from datetime import datetime
 import os
 
@@ -21,6 +21,10 @@ socketio = SocketIO(
 # Store active users per show
 # Format: {show_id: {user_id: {'username': str, 'sid': str}}}
 active_users = {}
+
+# Store DM-active users (users on the messages page)
+# Format: {user_id: {'sid': str, 'username': str}}
+dm_active_users = {}
 
 
 def get_sibling_show_ids(show_id):
@@ -91,6 +95,11 @@ def handle_disconnect():
     user = get_user_from_token()
 
     if user:
+        # Clean up DM presence
+        if user.id in dm_active_users:
+            leave_room(f'dm_user_{user.id}')
+            del dm_active_users[user.id]
+
         friend_ids = get_friend_ids(user.id)
 
         # Remove user from all show rooms
@@ -541,6 +550,115 @@ def handle_get_friends_locations(data):
             })
 
     emit('friends_locations', {'friends': friends})
+
+
+# ── Direct Messaging Events ──
+
+@socketio.on('join_dm')
+def handle_join_dm():
+    """User opens the messages page — join their personal DM room"""
+    user = get_user_from_token()
+    if not user:
+        emit('error', {'message': 'Unauthorized'})
+        return
+
+    room = f'dm_user_{user.id}'
+    join_room(room)
+    dm_active_users[user.id] = {'sid': request.sid, 'username': user.username}
+    print(f"{user.username} joined DM room {room}")
+
+
+@socketio.on('leave_dm')
+def handle_leave_dm():
+    """User leaves the messages page"""
+    user = get_user_from_token()
+    if not user:
+        return
+
+    room = f'dm_user_{user.id}'
+    leave_room(room)
+    dm_active_users.pop(user.id, None)
+    print(f"{user.username} left DM room {room}")
+
+
+@socketio.on('notify_dm')
+def handle_notify_dm(data):
+    """Broadcast a new DM to the other user (message already saved via REST)"""
+    user = get_user_from_token()
+    if not user:
+        return
+
+    conversation_id = data.get('conversation_id')
+    message = data.get('message')
+
+    if not conversation_id or not message:
+        return
+
+    conv = Conversation.query.get(conversation_id)
+    if not conv or user.id not in (conv.user1_id, conv.user2_id):
+        return
+
+    # Send to the OTHER user's personal room only (sender already has it)
+    other_id = conv.user2_id if user.id == conv.user1_id else conv.user1_id
+    emit('new_dm', message, room=f'dm_user_{other_id}')
+
+
+@socketio.on('dm_typing')
+def handle_dm_typing(data):
+    """Forward typing indicator to the other user"""
+    user = get_user_from_token()
+    if not user:
+        return
+
+    conversation_id = data.get('conversation_id')
+    is_typing = data.get('is_typing', False)
+
+    if not conversation_id:
+        return
+
+    conv = Conversation.query.get(conversation_id)
+    if not conv or user.id not in (conv.user1_id, conv.user2_id):
+        return
+
+    other_id = conv.user2_id if user.id == conv.user1_id else conv.user1_id
+
+    emit('dm_user_typing', {
+        'conversation_id': conversation_id,
+        'user_id': user.id,
+        'username': user.username,
+        'is_typing': is_typing,
+    }, room=f'dm_user_{other_id}')
+
+
+@socketio.on('dm_read')
+def handle_dm_read(data):
+    """Mark messages as read and notify sender"""
+    user = get_user_from_token()
+    if not user:
+        return
+
+    conversation_id = data.get('conversation_id')
+    if not conversation_id:
+        return
+
+    conv = Conversation.query.get(conversation_id)
+    if not conv or user.id not in (conv.user1_id, conv.user2_id):
+        return
+
+    now = datetime.utcnow()
+    DirectMessage.query.filter(
+        DirectMessage.conversation_id == conversation_id,
+        DirectMessage.sender_id != user.id,
+        DirectMessage.read_at.is_(None),
+    ).update({'read_at': now}, synchronize_session='fetch')
+    db.session.commit()
+
+    other_id = conv.user2_id if user.id == conv.user1_id else conv.user1_id
+    emit('dm_messages_read', {
+        'conversation_id': conversation_id,
+        'read_by': user.id,
+        'read_at': now.isoformat(),
+    }, room=f'dm_user_{other_id}')
 
 
 # Error handler

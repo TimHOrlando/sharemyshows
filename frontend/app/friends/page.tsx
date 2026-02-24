@@ -370,6 +370,12 @@ export default function FriendsPage() {
                                 View Shows
                               </button>
                               <button
+                                onClick={() => router.push(`/messages?friend_id=${friendship.friend.id}`)}
+                                className="flex-1 px-3 py-2 text-sm text-accent border border-accent/50 rounded-md hover:bg-accent/10 transition-colors"
+                              >
+                                Message
+                              </button>
+                              <button
                                 onClick={() => removeFriend(friendship.id)}
                                 disabled={actionLoading === friendship.id}
                                 className="flex-1 px-3 py-2 text-sm text-red-400 border border-red-500/50 rounded-md hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"

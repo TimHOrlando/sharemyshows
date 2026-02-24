@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { api } from '@/lib/api';
 
 interface NavbarProps {
   onOpenSettings?: () => void;
@@ -15,6 +16,23 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
   const pathname = usePathname();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [unreadDMs, setUnreadDMs] = useState(0);
+
+  const fetchUnreadCount = useCallback(async () => {
+    try {
+      const res = await api.get('/dm/unread-count');
+      setUnreadDMs(res.data.unread_count || 0);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetchUnreadCount();
+    const interval = setInterval(fetchUnreadCount, 30000);
+    return () => clearInterval(interval);
+  }, [user, fetchUnreadCount]);
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -34,6 +52,7 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/shows', label: 'My Shows' },
     { href: '/feed', label: 'Feed' },
+    { href: '/messages', label: 'Messages', badge: unreadDMs },
     { href: '/friends', label: 'Friends' },
   ];
 
@@ -56,13 +75,18 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
                 <Link
                   key={link.href}
                   href={link.href}
-                  className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                  className={`relative px-4 py-2 rounded-full text-sm font-medium transition-colors ${
                     isActive(link.href)
                       ? 'bg-accent text-white'
                       : 'text-secondary hover:text-primary hover:bg-hover'
                   }`}
                 >
                   {link.label}
+                  {link.badge && link.badge > 0 ? (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                      {link.badge > 99 ? '99+' : link.badge}
+                    </span>
+                  ) : null}
                 </Link>
               ))}
             </div>
@@ -132,8 +156,12 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
                     : 'text-secondary hover:text-primary hover:bg-hover'
                 }`}
               >
-                
                 {link.label}
+                {link.badge && link.badge > 0 ? (
+                  <span className="bg-red-500 text-white text-xs rounded-full px-2 py-0.5 ml-auto">
+                    {link.badge > 99 ? '99+' : link.badge}
+                  </span>
+                ) : null}
               </Link>
             ))}
           </div>
