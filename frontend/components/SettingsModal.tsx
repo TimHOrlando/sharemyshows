@@ -6,6 +6,7 @@ import { authService } from '@/lib/auth';
 import { useTheme, ThemeName, ThemeColors } from '@/contexts/ThemeContext';
 import PasswordRequirements from '@/components/PasswordRequirements';
 import { validatePassword } from '@/lib/passwordValidation';
+import { api } from '@/lib/api';
 
 // Helper function to get theme colors
 function getThemeColors(themeName: ThemeName, customColors: ThemeColors): ThemeColors {
@@ -315,6 +316,37 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Privacy */}
+            <div className="bg-secondary rounded-lg p-6">
+              <h3 className="text-lg font-medium text-primary mb-4">Privacy</h3>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-primary">Appear Offline</p>
+                  <p className="text-xs text-muted">Hide your online status from friends</p>
+                </div>
+                <button
+                  onClick={async () => {
+                    const newValue = !user?.appear_offline;
+                    try {
+                      await api.put('/auth/profile/appear-offline', { appear_offline: newValue });
+                      await refreshUser();
+                    } catch (err) {
+                      console.error('Failed to toggle appear offline:', err);
+                    }
+                  }}
+                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors flex-shrink-0 ${
+                    user?.appear_offline ? 'bg-accent' : 'bg-tertiary'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${
+                      user?.appear_offline ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
               </div>
             </div>
 

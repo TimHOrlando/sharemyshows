@@ -53,6 +53,9 @@ export default function MessagesPage() {
   const typingTimeout = useRef<NodeJS.Timeout | null>(null);
   const lastTypingEmit = useRef(0);
 
+  // Online presence
+  const [onlineFriendIds, setOnlineFriendIds] = useState<Set<number>>(new Set());
+
   // Mobile state
   const [showThread, setShowThread] = useState(false);
 
@@ -162,6 +165,14 @@ export default function MessagesPage() {
     if (user) fetchConversations();
   }, [user, fetchConversations]);
 
+  // ── Fetch initial online friends ──
+  useEffect(() => {
+    if (!user) return;
+    api.get('/friends/online').then(res => {
+      setOnlineFriendIds(new Set(res.data.online_ids || []));
+    }).catch(() => {});
+  }, [user]);
+
   // ── Socket connection ──
   useEffect(() => {
     const token = localStorage.getItem('access_token');
@@ -223,6 +234,18 @@ export default function MessagesPage() {
         if (typingTimeout.current) clearTimeout(typingTimeout.current);
         typingTimeout.current = setTimeout(() => setTypingUser(null), 3000);
       }
+    });
+
+    socket.on('friend_online', (data: { user_id: number }) => {
+      setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
+    });
+
+    socket.on('friend_offline', (data: { user_id: number }) => {
+      setOnlineFriendIds(prev => {
+        const next = new Set(prev);
+        next.delete(data.user_id);
+        return next;
+      });
     });
 
     socket.on('dm_messages_read', (data: { conversation_id: number; read_at: string }) => {
@@ -382,8 +405,13 @@ export default function MessagesPage() {
                     }`}
                   >
                     {/* Avatar */}
-                    <div className="w-10 h-10 rounded-full bg-accent/20 text-accent flex items-center justify-center text-sm font-bold shrink-0">
-                      {initial(conv.other_user.username)}
+                    <div className="relative shrink-0">
+                      <div className="w-10 h-10 rounded-full bg-accent/20 text-accent flex items-center justify-center text-sm font-bold">
+                        {initial(conv.other_user.username)}
+                      </div>
+                      {onlineFriendIds.has(conv.other_user.id) && (
+                        <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-secondary" />
+                      )}
                     </div>
                     {/* Content */}
                     <div className="flex-1 min-w-0">
@@ -440,9 +468,11 @@ export default function MessagesPage() {
                   </div>
                   <div>
                     <p className="text-sm font-medium text-primary">{activeConv.other_user.username}</p>
-                    {typingUser && (
+                    {typingUser ? (
                       <p className="text-xs text-accent animate-pulse">typing...</p>
-                    )}
+                    ) : onlineFriendIds.has(activeConv.other_user.id) ? (
+                      <p className="text-xs text-green-400">Online</p>
+                    ) : null}
                   </div>
                 </div>
 

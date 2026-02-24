@@ -26,6 +26,10 @@ active_users = {}
 # Format: {user_id: {'sid': str, 'username': str}}
 dm_active_users = {}
 
+# Store globally online users (for friend presence)
+# Format: {user_id: set(sid, ...)}
+online_users = {}
+
 
 def get_sibling_show_ids(show_id):
     """Get all show IDs for the same concert (same artist, venue, date)."""
@@ -80,11 +84,29 @@ def get_user_from_token():
 def handle_connect():
     """Handle client connection"""
     user = get_user_from_token()
-    
+
     if not user:
         print("Unauthorized connection attempt")
         return False  # Reject connection
-    
+
+    # Track online presence (unless appearing offline)
+    try:
+        if not getattr(user, 'appear_offline', False):
+            was_empty = user.id not in online_users or len(online_users.get(user.id, set())) == 0
+            online_users.setdefault(user.id, set()).add(request.sid)
+            # Only notify friends on the *first* connection (not additional tabs)
+            if was_empty:
+                friend_ids = get_friend_ids(user.id)
+                for fid in friend_ids:
+                    if fid in online_users:
+                        for sid in online_users[fid]:
+                            emit('friend_online', {
+                                'user_id': user.id,
+                                'username': user.username
+                            }, to=sid)
+    except Exception as e:
+        print(f"Error tracking online presence on connect: {e}")
+
     print(f"Client connected: {user.username} (sid: {request.sid})")
     emit('connected', {'message': 'Connected to ShareMyShows', 'username': user.username})
 
@@ -95,6 +117,24 @@ def handle_disconnect():
     user = get_user_from_token()
 
     if user:
+        # Clean up global online presence
+        try:
+            sids = online_users.get(user.id, set())
+            sids.discard(request.sid)
+            if not sids:
+                # Last connection gone — user is truly offline
+                online_users.pop(user.id, None)
+                friend_ids = get_friend_ids(user.id)
+                for fid in friend_ids:
+                    if fid in online_users:
+                        for sid in online_users[fid]:
+                            emit('friend_offline', {
+                                'user_id': user.id,
+                                'username': user.username
+                            }, to=sid)
+        except Exception as e:
+            print(f"Error tracking online presence on disconnect: {e}")
+
         # Clean up DM presence
         if user.id in dm_active_users:
             leave_room(f'dm_user_{user.id}')
@@ -113,9 +153,11 @@ def handle_disconnect():
                         is_active=True
                     ).first()
                     if checkin and checkin.latitude is not None:
+                        share_ids = checkin.get_share_with_ids()
                         checkin.latitude = None
                         checkin.longitude = None
                         checkin.last_location_update = None
+                        checkin.share_with = None
                         db.session.commit()
 
                         # Notify friends across sibling shows (same concert)
@@ -123,7 +165,7 @@ def handle_disconnect():
                         for sid in sibling_ids:
                             if sid in active_users:
                                 for friend_id, info in active_users[sid].items():
-                                    if friend_id in friend_ids:
+                                    if friend_id in friend_ids and (share_ids is None or friend_id in share_ids):
                                         emit('location_stopped', {
                                             'user_id': user.id,
                                             'username': user.username
@@ -438,6 +480,10 @@ def handle_update_location(data):
             emit('error', {'message': 'Not checked in to this show'})
             return
 
+        # Update share_with if provided
+        if 'share_with' in data:
+            checkin.set_share_with(data['share_with'])
+
         checkin.latitude = latitude
         checkin.longitude = longitude
         checkin.last_location_update = datetime.utcnow()
@@ -445,11 +491,12 @@ def handle_update_location(data):
 
         # Emit location to accepted friends across all sibling shows (same concert)
         friend_ids = get_friend_ids(user.id)
+        share_ids = checkin.get_share_with_ids()  # None = all friends
         sibling_ids = get_sibling_show_ids(show_id)
         for sid in sibling_ids:
             if sid in active_users:
                 for friend_id, info in active_users[sid].items():
-                    if friend_id in friend_ids:
+                    if friend_id in friend_ids and (share_ids is None or friend_id in share_ids):
                         emit('location_update', {
                             'user_id': user.id,
                             'username': user.username,
@@ -486,10 +533,14 @@ def handle_stop_location(data):
             is_active=True
         ).first()
 
+        # Capture share_ids before clearing
+        share_ids = checkin.get_share_with_ids() if checkin else None
+
         if checkin:
             checkin.latitude = None
             checkin.longitude = None
             checkin.last_location_update = None
+            checkin.share_with = None
             db.session.commit()
 
         # Notify friends across all sibling shows (same concert)
@@ -498,7 +549,7 @@ def handle_stop_location(data):
         for sid in sibling_ids:
             if sid in active_users:
                 for friend_id, info in active_users[sid].items():
-                    if friend_id in friend_ids:
+                    if friend_id in friend_ids and (share_ids is None or friend_id in share_ids):
                         emit('location_stopped', {
                             'user_id': user.id,
                             'username': user.username
@@ -539,6 +590,10 @@ def handle_get_friends_locations(data):
 
     friends = []
     for checkin in checkins:
+        # Check if this friend's share_with list includes the requesting user
+        share_ids = checkin.get_share_with_ids()
+        if share_ids is not None and user.id not in share_ids:
+            continue
         friend = User.query.get(checkin.user_id)
         if friend:
             friends.append({
@@ -550,6 +605,79 @@ def handle_get_friends_locations(data):
             })
 
     emit('friends_locations', {'friends': friends})
+
+
+@socketio.on('update_share_with')
+def handle_update_share_with(data):
+    """Update the share_with list on an active checkin without a location update.
+    Emits location_stopped to removed friends and location_update to newly-added friends."""
+    user = get_user_from_token()
+
+    if not user:
+        emit('error', {'message': 'Unauthorized'})
+        return
+
+    show_id = data.get('show_id')
+    new_share_with = data.get('share_with')  # list of IDs or null
+
+    if not show_id:
+        emit('error', {'message': 'Missing show_id'})
+        return
+
+    try:
+        checkin = ShowCheckin.query.filter_by(
+            user_id=user.id,
+            show_id=show_id,
+            is_active=True
+        ).first()
+
+        if not checkin:
+            emit('error', {'message': 'Not checked in to this show'})
+            return
+
+        old_ids = checkin.get_share_with_ids()
+        checkin.set_share_with(new_share_with)
+        db.session.commit()
+        new_ids = checkin.get_share_with_ids()
+
+        friend_ids = get_friend_ids(user.id)
+        sibling_ids = get_sibling_show_ids(show_id)
+
+        # Determine who was removed and who was added
+        if old_ids is None:
+            old_visible = friend_ids
+        else:
+            old_visible = old_ids & friend_ids
+
+        if new_ids is None:
+            new_visible = friend_ids
+        else:
+            new_visible = new_ids & friend_ids
+
+        removed = old_visible - new_visible
+        added = new_visible - old_visible
+
+        for sid in sibling_ids:
+            if sid in active_users:
+                for fid, info in active_users[sid].items():
+                    if fid in removed:
+                        emit('location_stopped', {
+                            'user_id': user.id,
+                            'username': user.username
+                        }, to=info['sid'])
+                    elif fid in added and checkin.latitude is not None:
+                        emit('location_update', {
+                            'user_id': user.id,
+                            'username': user.username,
+                            'latitude': checkin.latitude,
+                            'longitude': checkin.longitude,
+                            'updated_at': checkin.last_location_update.isoformat() if checkin.last_location_update else None
+                        }, to=info['sid'])
+
+    except Exception as e:
+        db.session.rollback()
+        emit('error', {'message': 'Failed to update share list', 'details': str(e)})
+        print(f"Error updating share_with: {e}")
 
 
 # ── Direct Messaging Events ──
@@ -659,6 +787,47 @@ def handle_dm_read(data):
         'read_by': user.id,
         'read_at': now.isoformat(),
     }, room=f'dm_user_{other_id}')
+
+
+# ── Presence / Appear Offline ──
+
+@socketio.on('set_appear_offline')
+def handle_set_appear_offline(data):
+    """Toggle appear-offline status. Updates DB and broadcasts presence change."""
+    user = get_user_from_token()
+    if not user:
+        emit('error', {'message': 'Unauthorized'})
+        return
+
+    appear_offline = bool(data.get('appear_offline', False))
+    user.appear_offline = appear_offline
+    db.session.commit()
+
+    friend_ids = get_friend_ids(user.id)
+
+    if appear_offline:
+        # Remove all SIDs and tell friends we went offline
+        if user.id in online_users:
+            online_users.pop(user.id, None)
+            for fid in friend_ids:
+                if fid in online_users:
+                    for sid in online_users[fid]:
+                        emit('friend_offline', {
+                            'user_id': user.id,
+                            'username': user.username
+                        }, to=sid)
+    else:
+        # Add current SID and tell friends we came online
+        online_users.setdefault(user.id, set()).add(request.sid)
+        for fid in friend_ids:
+            if fid in online_users:
+                for sid in online_users[fid]:
+                    emit('friend_online', {
+                        'user_id': user.id,
+                        'username': user.username
+                    }, to=sid)
+
+    emit('appear_offline_updated', {'appear_offline': appear_offline})
 
 
 # Error handler

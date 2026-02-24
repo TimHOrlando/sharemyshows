@@ -7,7 +7,7 @@ from flask_restx import Namespace, Resource, fields
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 
-from app.models import db, User, Friendship, Show
+from app.models import db, User, Friendship, Show, get_friend_ids
 
 # Create namespace
 api = Namespace('friends', description='Friend management operations')
@@ -54,6 +54,25 @@ message_response = api.model('MessageResponse', {
 error_response = api.model('ErrorResponse', {
     'error': fields.String(description='Error message')
 })
+
+online_friends_response = api.model('OnlineFriendsResponse', {
+    'online_ids': fields.List(fields.Integer, description='IDs of online friends')
+})
+
+
+@api.route('/online')
+class OnlineFriends(Resource):
+    @api.doc('get_online_friends', security='jwt')
+    @api.response(200, 'Success', online_friends_response)
+    @jwt_required()
+    def get(self):
+        """Get IDs of friends currently online"""
+        from app.socket_events import online_users
+
+        current_user_id = int(get_jwt_identity())
+        friend_ids = get_friend_ids(current_user_id)
+        online_ids = [fid for fid in friend_ids if online_users.get(fid)]
+        return {'online_ids': online_ids}
 
 
 @api.route('/search')

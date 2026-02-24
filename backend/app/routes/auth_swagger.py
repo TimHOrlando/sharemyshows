@@ -25,6 +25,7 @@ user_model = api.model('User', {
     'username': fields.String(description='Username'),
     'email': fields.String(description='Email'),
     'mfa_enabled': fields.Boolean(description='MFA enabled status'),
+    'appear_offline': fields.Boolean(description='Appear offline to friends'),
     'created_at': fields.DateTime(description='Account creation time')
 })
 
@@ -827,6 +828,24 @@ class ProfileVerifyMFA(Resource):
         db.session.commit()
 
         return {'message': 'MFA has been enabled successfully for your account!'}, 200
+
+
+@api.route('/profile/appear-offline')
+class AppearOffline(Resource):
+    @api.doc('update_appear_offline', security='jwt')
+    @api.response(200, 'Status updated', message_response)
+    @jwt_required()
+    def put(self):
+        """Update user's appear-offline preference"""
+        current_user_id = int(get_jwt_identity())
+        user = User.query.get(current_user_id)
+        if not user:
+            return {'error': 'User not found'}, 404
+
+        data = request.get_json()
+        user.appear_offline = bool(data.get('appear_offline', False))
+        db.session.commit()
+        return {'message': 'Appear offline status updated', 'appear_offline': user.appear_offline}
 
 
 @api.route('/profile/theme')

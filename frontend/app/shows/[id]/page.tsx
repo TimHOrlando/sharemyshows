@@ -6,6 +6,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import Navbar from '@/components/Navbar';
 import SettingsModal from '@/components/SettingsModal';
 import FriendMapModal from '@/components/FriendMapModal';
+import LocationSharePickerModal from '@/components/LocationSharePickerModal';
 import { api } from '@/lib/api';
 import { io, Socket } from 'socket.io-client';
 
@@ -161,9 +162,15 @@ export default function ShowDetailPage() {
 
   // Friend map state
   const [friendMapOpen, setFriendMapOpen] = useState(false);
+  // Share picker state
+  const [sharePickerOpen, setSharePickerOpen] = useState(false);
+  const [shareWithIds, setShareWithIds] = useState<number[] | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const locationEmitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Online presence for Friends Here
+  const [onlineFriendIds, setOnlineFriendIds] = useState<Set<number>>(new Set());
 
   // Toast notification state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
@@ -193,7 +200,7 @@ export default function ShowDetailPage() {
 
   // WebSocket connection
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('access_token');
     if (!token || !showId) return;
 
     const socket = io(process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000', {
@@ -239,6 +246,24 @@ export default function ShowDetailPage() {
     socket.on('location_stopped', (data: { user_id: number }) => {
       setNearbyUsers(prev => prev.filter(u => u.id !== data.user_id));
     });
+
+    // Friend online presence events
+    socket.on('friend_online', (data: { user_id: number }) => {
+      setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
+    });
+
+    socket.on('friend_offline', (data: { user_id: number }) => {
+      setOnlineFriendIds(prev => {
+        const next = new Set(prev);
+        next.delete(data.user_id);
+        return next;
+      });
+    });
+
+    // Fetch initial online friends
+    api.get('/friends/online').then(res => {
+      setOnlineFriendIds(new Set(res.data.online_ids || []));
+    }).catch(() => {});
 
     socketRef.current = socket;
 
@@ -469,7 +494,7 @@ export default function ShowDetailPage() {
   };
 
   // Location/presence functions
-  const startLocationTracking = async (isResume = false) => {
+  const startLocationTracking = async (isResume = false, shareWith?: number[] | null) => {
     try {
       const position = await new Promise<GeolocationPosition>((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
@@ -482,10 +507,17 @@ export default function ShowDetailPage() {
       setSharingLocation(true);
       setLocationEnabled(true);
 
-      // POST presence via REST
+      // Use provided shareWith or keep current
+      const effectiveShareWith = shareWith !== undefined ? shareWith : shareWithIds;
+      if (shareWith !== undefined) {
+        setShareWithIds(shareWith);
+      }
+
+      // POST presence via REST (include share_with)
       await api.post(`/shows/${showId}/presence`, {
         latitude: initialLoc.lat,
-        longitude: initialLoc.lng
+        longitude: initialLoc.lng,
+        share_with: effectiveShareWith,
       });
 
       // Emit location via WebSocket
@@ -494,6 +526,7 @@ export default function ShowDetailPage() {
           show_id: parseInt(showId),
           latitude: initialLoc.lat,
           longitude: initialLoc.lng,
+          share_with: effectiveShareWith,
         });
       }
 
@@ -525,8 +558,13 @@ export default function ShowDetailPage() {
       }, 20000);
       locationEmitIntervalRef.current = intervalId;
 
-      // Persist state
+      // Persist state (including share_with)
       localStorage.setItem(`sharing_location_${showId}`, 'true');
+      if (effectiveShareWith !== null && effectiveShareWith !== undefined) {
+        localStorage.setItem(`share_with_${showId}`, JSON.stringify(effectiveShareWith));
+      } else {
+        localStorage.removeItem(`share_with_${showId}`);
+      }
 
       fetchNearbyUsers();
 
@@ -537,6 +575,7 @@ export default function ShowDetailPage() {
       console.error('Location access denied:', error);
       setLocationEnabled(false);
       localStorage.removeItem(`sharing_location_${showId}`);
+      localStorage.removeItem(`share_with_${showId}`);
       if (isResume) {
         setSharingLocation(false);
       }
@@ -555,7 +594,9 @@ export default function ShowDetailPage() {
 
     setSharingLocation(false);
     setUserLocation(null);
+    setShareWithIds(null);
     localStorage.removeItem(`sharing_location_${showId}`);
+    localStorage.removeItem(`share_with_${showId}`);
 
     if (socketRef.current) {
       socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
@@ -567,17 +608,56 @@ export default function ShowDetailPage() {
 
   const toggleLocationSharing = async () => {
     if (!sharingLocation) {
-      await startLocationTracking();
+      // Open picker instead of starting immediately
+      setSharePickerOpen(true);
     } else {
       await stopLocationTracking();
     }
+  };
+
+  const handleSharePickerConfirm = async (selectedIds: number[] | null) => {
+    setSharePickerOpen(false);
+    await startLocationTracking(false, selectedIds);
+  };
+
+  const handleSharePickerUpdate = async (selectedIds: number[] | null) => {
+    setSharePickerOpen(false);
+    setShareWithIds(selectedIds);
+
+    // Persist to localStorage
+    if (selectedIds !== null) {
+      localStorage.setItem(`share_with_${showId}`, JSON.stringify(selectedIds));
+    } else {
+      localStorage.removeItem(`share_with_${showId}`);
+    }
+
+    // Update via REST
+    await api.put(`/shows/${showId}/share-with`, { share_with: selectedIds });
+
+    // Update via WebSocket
+    if (socketRef.current) {
+      socketRef.current.emit('update_share_with', {
+        show_id: parseInt(showId),
+        share_with: selectedIds,
+      });
+    }
+
+    showToast(
+      selectedIds === null
+        ? 'Sharing with all friends'
+        : `Sharing with ${selectedIds.length} friend${selectedIds.length !== 1 ? 's' : ''}`,
+      'success'
+    );
   };
 
   // Resume location sharing on mount if previously active
   useEffect(() => {
     const wasSharing = localStorage.getItem(`sharing_location_${showId}`);
     if (wasSharing === 'true') {
-      startLocationTracking(true);
+      const savedShareWith = localStorage.getItem(`share_with_${showId}`);
+      const parsedShareWith: number[] | null = savedShareWith ? JSON.parse(savedShareWith) : null;
+      setShareWithIds(parsedShareWith);
+      startLocationTracking(true, parsedShareWith);
     }
   }, [showId]);
 
@@ -1664,6 +1744,21 @@ export default function ShowDetailPage() {
                     />
                   </button>
                 </div>
+                {sharingLocation && (
+                  <div className="mt-3 pt-3 border-t border-theme flex items-center justify-between">
+                    <p className="text-sm text-muted">
+                      {shareWithIds === null
+                        ? 'Sharing with all friends'
+                        : `Sharing with ${shareWithIds.length} friend${shareWithIds.length !== 1 ? 's' : ''}`}
+                    </p>
+                    <button
+                      onClick={() => setSharePickerOpen(true)}
+                      className="text-sm text-accent hover:underline"
+                    >
+                      Change
+                    </button>
+                  </div>
+                )}
               </div>
 
               {sharingLocation ? (
@@ -1677,10 +1772,15 @@ export default function ShowDetailPage() {
                         key={person.id}
                         className="flex items-center gap-4 px-4 py-3 border-b border-theme last:border-b-0 hover:bg-tertiary transition-colors"
                       >
-                        <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
-                          <span className="text-sm font-bold text-accent">
-                            {person.username.charAt(0).toUpperCase()}
-                          </span>
+                        <div className="relative">
+                          <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
+                            <span className="text-sm font-bold text-accent">
+                              {person.username.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                          <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-secondary ${
+                            onlineFriendIds.has(person.id) ? 'bg-green-500' : 'bg-gray-500'
+                          }`} />
                         </div>
                         <div className="flex-1">
                           <p className="text-primary font-medium">{person.username}</p>
@@ -1688,8 +1788,12 @@ export default function ShowDetailPage() {
                             <p className="text-sm text-muted">{person.distance} away</p>
                           )}
                         </div>
-                        <span className="px-3 py-1 text-xs font-medium text-accent bg-accent/20 rounded-full">
-                          Friend
+                        <span className={`px-3 py-1 text-xs font-medium rounded-full ${
+                          onlineFriendIds.has(person.id)
+                            ? 'text-green-400 bg-green-500/20'
+                            : 'text-gray-400 bg-gray-500/20'
+                        }`}>
+                          {onlineFriendIds.has(person.id) ? 'Online' : 'Offline'}
                         </span>
                       </div>
                     ))}
@@ -1963,6 +2067,13 @@ export default function ShowDetailPage() {
               ? { lat: show.venue.latitude, lng: show.venue.longitude }
               : null
           }
+        />
+
+        <LocationSharePickerModal
+          isOpen={sharePickerOpen}
+          onClose={() => setSharePickerOpen(false)}
+          onConfirm={sharingLocation ? handleSharePickerUpdate : handleSharePickerConfirm}
+          initialSelection={shareWithIds}
         />
 
         <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />

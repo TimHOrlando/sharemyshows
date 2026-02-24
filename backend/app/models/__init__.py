@@ -1,6 +1,7 @@
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
+import json
 import pyotp
 
 db = SQLAlchemy()
@@ -32,6 +33,7 @@ class User(db.Model):
     
     # Preferences
     theme_preference = db.Column(db.String(20), default='forest')
+    appear_offline = db.Column(db.Boolean, default=False)
 
     # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -78,6 +80,7 @@ class User(db.Model):
             'mfa_enabled': self.mfa_enabled,
             'mfa_method': self.mfa_method,
             'email_verified': self.email_verified,
+            'appear_offline': self.appear_offline or False,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -378,11 +381,28 @@ class ShowCheckin(db.Model):
     latitude = db.Column(db.Float)
     longitude = db.Column(db.Float)
     last_location_update = db.Column(db.DateTime)
-    
+    share_with = db.Column(db.Text, nullable=True)  # JSON array of friend IDs, null = all friends
+
     __table_args__ = (
         db.UniqueConstraint('user_id', 'show_id', name='unique_user_show_checkin'),
     )
-    
+
+    def get_share_with_ids(self):
+        """Return set of friend IDs to share with, or None (= all friends)."""
+        if self.share_with is None:
+            return None
+        try:
+            return set(json.loads(self.share_with))
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def set_share_with(self, friend_ids):
+        """Set selective sharing list. None = share with all friends."""
+        if friend_ids is None:
+            self.share_with = None
+        else:
+            self.share_with = json.dumps([int(fid) for fid in friend_ids])
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -390,7 +410,8 @@ class ShowCheckin(db.Model):
             'show_id': self.show_id,
             'checked_in_at': self.checked_in_at.isoformat() if self.checked_in_at else None,
             'checked_out_at': self.checked_out_at.isoformat() if self.checked_out_at else None,
-            'is_active': self.is_active
+            'is_active': self.is_active,
+            'share_with': self.get_share_with_ids(),
         }
 
 class Conversation(db.Model):

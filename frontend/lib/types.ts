@@ -7,6 +7,7 @@ export interface User {
   bio?: string;
   profile_picture_url?: string;
   mfa_enabled: boolean;
+  appear_offline?: boolean;
   created_at: string;
 }
 

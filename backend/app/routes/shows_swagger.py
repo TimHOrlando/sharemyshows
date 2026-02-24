@@ -843,10 +843,12 @@ class ShowPresence(Resource):
                     'is_friend': checkin.user_id in friend_ids,
                     'last_seen': checkin.last_location_update.isoformat() if checkin.last_location_update else checkin.checked_in_at.isoformat()
                 }
-                # Include coordinates for friends
+                # Include coordinates for friends (only if viewer is in sharer's share_with list)
                 if checkin.user_id in friend_ids and checkin.latitude is not None:
-                    user_data['latitude'] = checkin.latitude
-                    user_data['longitude'] = checkin.longitude
+                    share_ids = checkin.get_share_with_ids()
+                    if share_ids is None or current_user_id in share_ids:
+                        user_data['latitude'] = checkin.latitude
+                        user_data['longitude'] = checkin.longitude
                 users.append(user_data)
         
         return {'users': users}
@@ -880,9 +882,13 @@ class ShowPresence(Resource):
         checkin.longitude = longitude
         checkin.last_location_update = datetime.utcnow()
         checkin.is_active = True
-        
+
+        # Set selective sharing list if provided
+        if 'share_with' in data:
+            checkin.set_share_with(data['share_with'])
+
         db.session.commit()
-        
+
         return {'message': 'Location updated'}
     
     @api.doc('stop_presence', security='jwt')
@@ -900,9 +906,51 @@ class ShowPresence(Resource):
             checkin.is_active = False
             checkin.latitude = None
             checkin.longitude = None
+            checkin.share_with = None
             db.session.commit()
-        
+
         return {'message': 'Location sharing stopped'}
+
+
+@api.route('/<int:show_id>/share-with')
+class ShowShareWith(Resource):
+    @api.doc('get_share_with', security='jwt')
+    @jwt_required()
+    def get(self, show_id):
+        """Get current share_with list for this show"""
+        current_user_id = int(get_jwt_identity())
+
+        checkin = ShowCheckin.query.filter_by(
+            user_id=current_user_id,
+            show_id=show_id
+        ).first()
+
+        if not checkin:
+            return {'share_with': None}
+
+        share_ids = checkin.get_share_with_ids()
+        return {'share_with': list(share_ids) if share_ids is not None else None}
+
+    @api.doc('update_share_with', security='jwt')
+    @jwt_required()
+    def put(self, show_id):
+        """Update the share_with list while already sharing location"""
+        current_user_id = int(get_jwt_identity())
+        data = request.get_json()
+
+        checkin = ShowCheckin.query.filter_by(
+            user_id=current_user_id,
+            show_id=show_id
+        ).first()
+
+        if not checkin:
+            return {'error': 'Not checked in to this show'}, 400
+
+        checkin.set_share_with(data.get('share_with'))
+        db.session.commit()
+
+        share_ids = checkin.get_share_with_ids()
+        return {'share_with': list(share_ids) if share_ids is not None else None}
 
 
 @api.route('/<int:show_id>/photos')

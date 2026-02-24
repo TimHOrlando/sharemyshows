@@ -5,6 +5,19 @@ Runs Flask app with SocketIO support
 import eventlet
 eventlet.monkey_patch()
 
+import logging
+
+# Suppress the known werkzeug 3.x + eventlet WebSocket upgrade error.
+# The socket.io client retries with polling transport and works fine.
+class _SuppressWerkzeugWsError(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        if 'write() before start_response' in msg:
+            return False
+        return True
+
+logging.getLogger('werkzeug').addFilter(_SuppressWerkzeugWsError())
+
 from app import create_app, socketio
 
 # Create the Flask app

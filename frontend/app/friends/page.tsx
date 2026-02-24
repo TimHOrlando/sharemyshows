@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { io, Socket } from 'socket.io-client';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Navbar from '@/components/Navbar';
 import SettingsModal from '@/components/SettingsModal';
+import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
 
 
@@ -27,8 +29,11 @@ interface Friendship {
 
 export default function FriendsPage() {
   const router = useRouter();
+  const { user, refreshUser } = useAuth();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'friends' | 'requests' | 'search'>('friends');
+  const [onlineFriendIds, setOnlineFriendIds] = useState<Set<number>>(new Set());
+  const socketRef = useRef<Socket | null>(null);
 
   // Friends list
   const [friends, setFriends] = useState<Friendship[]>([]);
@@ -58,6 +63,51 @@ export default function FriendsPage() {
       fetchRequests();
     }
   }, [activeTab]);
+
+  // Fetch online friend IDs and set up socket for real-time presence
+  useEffect(() => {
+    const token = localStorage.getItem('access_token');
+    if (!token || !user) return;
+
+    // Fetch initial online IDs
+    api.get('/friends/online').then(res => {
+      setOnlineFriendIds(new Set(res.data.online_ids || []));
+    }).catch(() => {});
+
+    const socket = io(
+      process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000',
+      { query: { token }, transports: ['websocket', 'polling'] }
+    );
+    socketRef.current = socket;
+
+    socket.on('friend_online', (data: { user_id: number }) => {
+      setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
+    });
+
+    socket.on('friend_offline', (data: { user_id: number }) => {
+      setOnlineFriendIds(prev => {
+        const next = new Set(prev);
+        next.delete(data.user_id);
+        return next;
+      });
+    });
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [user]);
+
+  const toggleAppearOffline = useCallback(async () => {
+    const newValue = !user?.appear_offline;
+    try {
+      await api.put('/auth/profile/appear-offline', { appear_offline: newValue });
+      socketRef.current?.emit('set_appear_offline', { appear_offline: newValue });
+      await refreshUser();
+    } catch (err) {
+      console.error('Failed to toggle appear offline:', err);
+    }
+  }, [user, refreshUser]);
 
   const fetchFriends = async () => {
     try {
@@ -303,6 +353,26 @@ export default function FriendsPage() {
                 {/* Friends List Tab */}
                 {activeTab === 'friends' && (
                   <div>
+                    {/* Appear Offline Toggle */}
+                    <div className="flex items-center justify-between mb-4 bg-secondary rounded-xl px-4 py-3">
+                      <div>
+                        <p className="text-primary font-medium text-sm">Appear Offline</p>
+                        <p className="text-xs text-muted">Hide your online status from friends</p>
+                      </div>
+                      <button
+                        onClick={toggleAppearOffline}
+                        className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors flex-shrink-0 ${
+                          user?.appear_offline ? 'bg-accent' : 'bg-tertiary'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${
+                            user?.appear_offline ? 'translate-x-6' : 'translate-x-1'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
                     {/* Search & Sort */}
                     {friends.length > 0 && (
                       <div className="flex flex-col sm:flex-row gap-3 mb-6">
@@ -353,11 +423,21 @@ export default function FriendsPage() {
                           <div key={friendship.id} className="bg-secondary rounded-xl p-4 hover:bg-tertiary transition-colors">
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
-                                <h3 className="text-lg font-medium text-primary">
-                                  {friendship.friend.username}
-                                </h3>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="text-lg font-medium text-primary">
+                                    {friendship.friend.username}
+                                  </h3>
+                                  <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+                                    onlineFriendIds.has(friendship.friend.id) ? 'bg-green-500' : 'bg-gray-500'
+                                  }`} />
+                                </div>
                                 <p className="text-sm text-muted">{friendship.friend.email}</p>
-                                <p className="text-xs text-muted mt-2">
+                                <p className={`text-xs mt-1 ${
+                                  onlineFriendIds.has(friendship.friend.id) ? 'text-green-400' : 'text-muted'
+                                }`}>
+                                  {onlineFriendIds.has(friendship.friend.id) ? 'Online' : 'Offline'}
+                                </p>
+                                <p className="text-xs text-muted mt-1">
                                   Friends since {formatDate(friendship.created_at)}
                                 </p>
                               </div>
