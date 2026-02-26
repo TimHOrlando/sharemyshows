@@ -12,6 +12,7 @@ interface Artist {
   artist_name: string;
   show_count: number;
   description: string;
+  image_url: string;
 }
 
 interface TooltipState {
@@ -174,7 +175,20 @@ export default function ArtistsPage() {
                   className="bg-secondary rounded-xl p-6 text-left hover:bg-tertiary transition-all hover:scale-[1.02] active:scale-[0.98]"
                 >
                   <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-full bg-tertiary flex items-center justify-center flex-shrink-0">
+                    {artist.image_url ? (
+                      <img
+                        src={artist.image_url}
+                        alt={artist.artist_name}
+                        className="w-12 h-12 rounded-full object-cover flex-shrink-0"
+                        onError={(e) => {
+                          // Fallback to icon on load failure
+                          const target = e.currentTarget;
+                          target.style.display = 'none';
+                          target.nextElementSibling?.classList.remove('hidden');
+                        }}
+                      />
+                    ) : null}
+                    <div className={`w-12 h-12 rounded-full bg-tertiary flex items-center justify-center flex-shrink-0${artist.image_url ? ' hidden' : ''}`}>
                       <svg className="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                       </svg>

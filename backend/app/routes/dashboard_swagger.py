@@ -23,22 +23,24 @@ MUSICBRAINZ_HEADERS = {
 }
 
 
-def fetch_artist_description(mbid):
-    """Fetch artist description via MusicBrainz → Wikidata → Wikipedia pipeline.
-    Returns description string or None."""
+def fetch_artist_metadata(mbid):
+    """Fetch artist description and image via MusicBrainz → Wikidata → Wikipedia pipeline.
+    Returns dict with 'description' and 'image_url' keys (values may be None)."""
+    result = {'description': None, 'image_url': None}
     try:
-        # Step 1: Get Wikidata URL from MusicBrainz
+        # Step 1: Get Wikidata URL and image relations from MusicBrainz
         resp = requests.get(
             f'{MUSICBRAINZ_BASE_URL}/artist/{mbid}?inc=url-rels&fmt=json',
             headers=MUSICBRAINZ_HEADERS,
             timeout=5
         )
         if resp.status_code != 200:
-            return None
+            return result
 
         data = resp.json()
+        artist_name = data.get('name', '')
 
-        # Look for wikidata link first, then direct wikipedia link
+        # Look for wikidata link, direct wikipedia link, and image relations
         wikidata_qid = None
         wiki_title = None
         for rel in data.get('relations', []):
@@ -51,6 +53,13 @@ def fetch_artist_description(mbid):
                 match = re.search(r'en\.wikipedia\.org/wiki/(.+)$', url)
                 if match:
                     wiki_title = match.group(1)
+            elif rel.get('type') == 'image':
+                # Wikimedia Commons image relation
+                # URL like: https://commons.wikimedia.org/wiki/File:Band.jpg
+                commons_match = re.search(r'commons\.wikimedia\.org/wiki/File:(.+)$', url)
+                if commons_match and not result['image_url']:
+                    filename = commons_match.group(1)
+                    result['image_url'] = f'https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width=300'
 
         # Step 2: Resolve Wikipedia title via Wikidata if needed
         if not wiki_title and wikidata_qid:
@@ -66,34 +75,61 @@ def fetch_artist_description(mbid):
                 if 'enwiki' in sitelinks:
                     wiki_title = sitelinks['enwiki']['title']
 
-        if not wiki_title:
-            return None
+        # Step 3: Fetch Wikipedia summary (also provides thumbnail as fallback)
+        if wiki_title:
+            time.sleep(1)
+            wiki_resp = requests.get(
+                f'https://en.wikipedia.org/api/rest_v1/page/summary/{wiki_title}',
+                headers={'User-Agent': 'ShareMyShows/1.0'},
+                timeout=5
+            )
+            if wiki_resp.status_code == 200:
+                wiki_data = wiki_resp.json()
+                result['description'] = wiki_data.get('extract', '')
 
-        # Step 3: Fetch Wikipedia summary
-        time.sleep(1)
-        wiki_resp = requests.get(
-            f'https://en.wikipedia.org/api/rest_v1/page/summary/{wiki_title}',
-            headers={'User-Agent': 'ShareMyShows/1.0'},
-            timeout=5
-        )
-        if wiki_resp.status_code != 200:
-            return None
+                # Use Wikipedia thumbnail as fallback if no MusicBrainz image
+                if not result['image_url']:
+                    thumbnail = wiki_data.get('thumbnail', {})
+                    if thumbnail.get('source'):
+                        result['image_url'] = thumbnail['source']
 
-        wiki_data = wiki_resp.json()
-        return wiki_data.get('extract', '')
+        # Step 4: Deezer fallback if still no image
+        if not result['image_url'] and artist_name:
+            try:
+                deezer_resp = requests.get(
+                    'https://api.deezer.com/search/artist',
+                    params={'q': artist_name, 'limit': 5},
+                    timeout=5
+                )
+                if deezer_resp.status_code == 200:
+                    deezer_data = deezer_resp.json()
+                    # Find best match by comparing names case-insensitively
+                    for hit in deezer_data.get('data', []):
+                        if hit.get('name', '').lower() == artist_name.lower():
+                            result['image_url'] = hit.get('picture_medium') or hit.get('picture')
+                            break
+                    # If no exact match, use first result
+                    if not result['image_url'] and deezer_data.get('data'):
+                        result['image_url'] = deezer_data['data'][0].get('picture_medium') or deezer_data['data'][0].get('picture')
+            except Exception:
+                pass
+
+        return result
 
     except Exception:
-        return None
+        return result
 
-def _backfill_artist_descriptions(artist_ids_with_mbids, app):
-    """Background thread: fetch and save artist descriptions without blocking requests."""
+def _backfill_artist_metadata(artist_ids_with_mbids, app):
+    """Background thread: fetch and save artist descriptions and images without blocking requests."""
     with app.app_context():
         for artist_id, mbid in artist_ids_with_mbids:
-            desc = fetch_artist_description(mbid)
-            if desc:
-                artist = Artist.query.get(artist_id)
-                if artist:
-                    artist.disambiguation = desc
+            metadata = fetch_artist_metadata(mbid)
+            artist = Artist.query.get(artist_id)
+            if artist:
+                if metadata['description'] and not artist.disambiguation:
+                    artist.disambiguation = metadata['description']
+                if metadata['image_url'] and not artist.image_url:
+                    artist.image_url = metadata['image_url']
         db.session.commit()
 
 
@@ -115,7 +151,8 @@ artist_stats_model = api.model('ArtistStats', {
     'artist_name': fields.String(description='Artist name'),
     'show_count': fields.Integer(description='Number of shows'),
     'artist_id': fields.Integer(description='Artist ID'),
-    'description': fields.String(description='Artist description from Wikipedia via MusicBrainz')
+    'description': fields.String(description='Artist description from Wikipedia via MusicBrainz'),
+    'image_url': fields.String(description='Artist thumbnail image URL')
 })
 
 venue_stats_model = api.model('VenueStats', {
@@ -246,20 +283,21 @@ class DashboardArtists(Resource):
             Artist.name,
             Artist.mbid,
             Artist.disambiguation,
+            Artist.image_url,
             func.count(Show.id).label('show_count')
         ).join(Show, Show.artist_id == Artist.id)\
          .filter(Show.user_id == current_user_id)\
-         .group_by(Artist.id, Artist.name, Artist.mbid, Artist.disambiguation)\
+         .group_by(Artist.id, Artist.name, Artist.mbid, Artist.disambiguation, Artist.image_url)\
          .order_by(func.count(Show.id).desc())\
          .all()
 
-        # Fire-and-forget backfill in background thread (no longer blocks response)
-        to_backfill = [(aid, mbid) for aid, name, mbid, desc, count in artist_stats if mbid and not desc]
+        # Fire-and-forget backfill for artists missing description OR image_url
+        to_backfill = [(aid, mbid) for aid, name, mbid, desc, img, count in artist_stats if mbid and (not desc or not img)]
         if to_backfill[:3]:
             from flask import current_app
             app = current_app._get_current_object()
             threading.Thread(
-                target=_backfill_artist_descriptions,
+                target=_backfill_artist_metadata,
                 args=(to_backfill[:3], app),
                 daemon=True
             ).start()
@@ -268,8 +306,9 @@ class DashboardArtists(Resource):
             'artist_id': artist_id,
             'artist_name': artist_name,
             'show_count': show_count,
-            'description': description or ''
-        } for artist_id, artist_name, mbid, description, show_count in artist_stats]
+            'description': description or '',
+            'image_url': image_url or ''
+        } for artist_id, artist_name, mbid, description, image_url, show_count in artist_stats]
 
         result = {
             'artists': results,

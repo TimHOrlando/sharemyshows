@@ -1,6 +1,6 @@
 # ShareMyShows - Project Status
 
-**Last Updated:** February 23, 2026
+**Last Updated:** February 25, 2026
 
 ---
 
@@ -65,6 +65,7 @@
 **Dashboard & Analytics**
 - Stats: total shows, artists, venues, media counts (2-min cache)
 - Top artists by show count with Wikipedia descriptions (MusicBrainz background backfill)
+- Artist thumbnail images: MusicBrainz image relations → Wikipedia thumbnail → Deezer API fallback
 - Top venues by show count (no hard limit)
 - Recent photos, audio, videos, comments
 
@@ -72,7 +73,8 @@
 - Google Places: venue search, autocomplete, details, photos
 - Setlist.fm: artist search, artist details, setlists by date
 - Concert Archives: HTML scraping for setlist fallback
-- MusicBrainz: song duration + songwriter lookup
+- MusicBrainz: song duration + songwriter lookup + artist image relations
+- Deezer: artist thumbnail image fallback (no API key required)
 
 **Infrastructure**
 - 69+ documented API endpoints across 10 namespaces
@@ -97,7 +99,7 @@
 - `/photos` - Photo gallery by show date with search/sort
 - `/videos` - Video library with streaming
 - `/comments` - All comments across shows
-- `/artists` - Top artists by show count
+- `/artists` - Top artists by show count with thumbnail images
 - `/venues` - Top venues by show count
 - `/friends` - Friends list, pending requests, user search, online indicators, Appear Offline toggle
 - `/messages` - Direct messaging with conversation list, real-time delivery, read receipts, online indicators
