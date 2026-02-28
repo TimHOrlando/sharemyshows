@@ -1,6 +1,6 @@
 # ShareMyShows - Project Status
 
-**Last Updated:** February 25, 2026
+**Last Updated:** February 28, 2026
 
 ---
 
@@ -55,11 +55,21 @@
 - `PUT /auth/profile/appear-offline` REST endpoint
 - `set_appear_offline` socket event for live toggle (updates DB + broadcasts immediately)
 
+**Notifications**
+- In-app notification system with unread count badge on Navbar bell icon
+- Show-added notifications when friends share a concert
+- Mark individual or all notifications as read
+- Real-time socket delivery to online users
+- Mobile-friendly dropdown (fixed positioning on small screens)
+
 **Find My Friends (Location Sharing)**
 - Live GPS sharing at shows via WebSocket (`update_location` / `stop_location`)
 - Privacy: broadcasts only to accepted friends (per-SID targeted emits)
+- Selective sharing: choose specific friends via LocationSharePickerModal
+- Explicit "Share My Location" overrides appear_offline (active opt-in vs passive presence)
 - Location persisted to `ShowCheckin` model, cleared on stop/disconnect
 - REST fallback for initial friend location fetch
+- Periodic 20s updates include share_with list for consistent selective sharing
 - Disconnect cleanup (clear location, notify friends)
 
 **Dashboard & Analytics**
@@ -76,8 +86,12 @@
 - MusicBrainz: song duration + songwriter lookup + artist image relations
 - Deezer: artist thumbnail image fallback (no API key required)
 
+**Performance**
+- Show detail page: pre-fetched related data with joinedload (7 fixed queries instead of 10+N)
+- Show list: batch-computed media/comment/song counts (5 queries instead of 5*N)
+
 **Infrastructure**
-- 69+ documented API endpoints across 10 namespaces
+- 70+ documented API endpoints across 11 namespaces
 - Full Swagger UI at `/api/docs`
 - Flask-SocketIO with eventlet async mode
 - SQLite (dev) with Flask-Migrate for schema management
@@ -105,7 +119,7 @@
 - `/messages` - Direct messaging with conversation list, real-time delivery, read receipts, online indicators
 
 **Components**
-- `Navbar` - Top navigation with auth state and user menu
+- `Navbar` - Top navigation with auth state, notification bell with dropdown, user menu
 - `AddShowModal` - Multi-step: venue search (Google Places) -> artist search (Setlist.fm) -> date/notes/rating
 - `ProtectedRoute` - Auth guard with login redirect
 - `ThemeSwitcher` - 7-theme selector using CSS variables
@@ -140,10 +154,7 @@
 
 ## In Progress
 
-**Friend Online/Offline Presence (frontend debugging)**
-- Backend tracking and events fully implemented and multi-tab safe
-- Frontend UI (green/gray dots, badges, toggles) all wired up
-- Investigating: presence events not reaching clients reliably — likely related to eventlet/werkzeug WebSocket transport upgrade failure causing fallback to polling; SID-targeted emits may not reach polling-transport connections correctly
+*No active in-progress items.*
 
 ---
 
@@ -164,7 +175,6 @@
 - Cloud file storage (S3, CloudFlare R2)
 
 **Social Expansion**
-- Push notifications / in-app notification center
 - SMS MFA (Twilio integration - currently stubbed)
 - User profile pages (view other users' public shows)
 - Activity feed with friend actions
