@@ -145,7 +145,7 @@ export default function RegisterPage() {
                 required
                 value={formData.username}
                 onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                className={`mt-1 appearance-none relative block w-full px-3 py-2 border ${
+                className={`mt-1 appearance-none relative block w-full px-3 py-3 border ${
                   errors.username ? 'border-red-500' : 'border-theme'
                 } placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm`}
                 placeholder="johndoe"
@@ -168,7 +168,7 @@ export default function RegisterPage() {
                 required
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                className={`mt-1 appearance-none relative block w-full px-3 py-2 border ${
+                className={`mt-1 appearance-none relative block w-full px-3 py-3 border ${
                   errors.email ? 'border-red-500' : 'border-theme'
                 } placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm`}
                 placeholder="john@example.com"
@@ -192,7 +192,7 @@ export default function RegisterPage() {
                   required
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className={`mt-1 appearance-none relative block w-full px-3 py-2 pr-10 border ${
+                  className={`mt-1 appearance-none relative block w-full px-3 py-3 pr-12 border ${
                     errors.password ? 'border-red-500' : 'border-theme'
                   } placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm`}
                   placeholder="••••••••"
@@ -200,7 +200,7 @@ export default function RegisterPage() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center w-10 justify-center"
                 >
                   {showPassword ? (
                     <svg className="h-5 w-5 text-muted hover:text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -234,7 +234,7 @@ export default function RegisterPage() {
                   required
                   value={formData.confirmPassword}
                   onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-                  className={`mt-1 appearance-none relative block w-full px-3 py-2 pr-10 border ${
+                  className={`mt-1 appearance-none relative block w-full px-3 py-3 pr-12 border ${
                     errors.confirmPassword ? 'border-red-500' : 'border-theme'
                   } placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm`}
                   placeholder="••••••••"
@@ -242,7 +242,7 @@ export default function RegisterPage() {
                 <button
                   type="button"
                   onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center w-10 justify-center"
                 >
                   {showConfirmPassword ? (
                     <svg className="h-5 w-5 text-muted hover:text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -269,9 +269,9 @@ export default function RegisterPage() {
                 type="checkbox"
                 checked={formData.enableMFA}
                 onChange={(e) => setFormData({ ...formData, enableMFA: e.target.checked })}
-                className="h-4 w-4 text-accent focus:ring-accent border-theme rounded"
+                className="h-5 w-5 text-accent focus:ring-accent border-theme rounded"
               />
-              <label htmlFor="enableMFA" className="ml-2 block text-sm text-secondary">
+              <label htmlFor="enableMFA" className="ml-3 block text-sm text-secondary">
                 Enable Multi-Factor Authentication (MFA) for extra security
               </label>
             </div>
@@ -281,7 +281,7 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={isLoading || (formData.password.length > 0 && !validatePassword(formData.password)) || (formData.confirmPassword.length > 0 && formData.password !== formData.confirmPassword)}
-              className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
+              className={`group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
                 isLoading || (formData.password.length > 0 && !validatePassword(formData.password)) || (formData.confirmPassword.length > 0 && formData.password !== formData.confirmPassword)
                   ? 'bg-accent opacity-50 cursor-not-allowed'
                   : 'bg-accent hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent'

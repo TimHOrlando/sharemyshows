@@ -45,9 +45,9 @@ def create_app(config_name='development'):
          methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
     
     # Initialize SocketIO
-    socketio.init_app(app, 
+    socketio.init_app(app,
                      cors_allowed_origins=app.config['CORS_ORIGINS'],
-                     async_mode='threading')
+                     async_mode='eventlet')
     
     # Initialize Flask-RESTX API
     api = Api(
@@ -160,6 +160,12 @@ def create_app(config_name='development'):
     try:
         from app.routes.dm_swagger import api as dm_ns
         api.add_namespace(dm_ns, path='/dm')
+    except ImportError:
+        pass
+
+    try:
+        from app.routes.notifications_swagger import api as notifications_ns
+        api.add_namespace(notifications_ns, path='/notifications')
     except ImportError:
         pass
 

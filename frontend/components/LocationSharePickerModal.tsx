@@ -13,6 +13,7 @@ interface LocationSharePickerModalProps {
   onClose: () => void;
   onConfirm: (selectedIds: number[] | null) => void;
   initialSelection: number[] | null; // null = all friends
+  showId?: number;
 }
 
 export default function LocationSharePickerModal({
@@ -20,6 +21,7 @@ export default function LocationSharePickerModal({
   onClose,
   onConfirm,
   initialSelection,
+  showId,
 }: LocationSharePickerModalProps) {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -32,14 +34,21 @@ export default function LocationSharePickerModal({
     const fetchFriends = async () => {
       setLoading(true);
       try {
-        const response = await api.get('/friends');
-        const accepted = (response.data.friends || [])
-          .filter((f: { status: string }) => f.status === 'accepted')
-          .map((f: { friend: { id: number; username: string } }) => ({
-            id: f.friend.id,
-            username: f.friend.username,
-          }));
-        setFriends(accepted);
+        if (showId) {
+          // Fetch only friends who are at this show
+          const response = await api.get(`/shows/${showId}/friends-at-show`);
+          setFriends(response.data.friends || []);
+        } else {
+          // Fallback: fetch all accepted friends
+          const response = await api.get('/friends');
+          const accepted = (response.data.friends || [])
+            .filter((f: { status: string }) => f.status === 'accepted')
+            .map((f: { friend: { id: number; username: string } }) => ({
+              id: f.friend.id,
+              username: f.friend.username,
+            }));
+          setFriends(accepted);
+        }
       } catch (error) {
         console.error('Failed to fetch friends:', error);
       } finally {
@@ -48,7 +57,7 @@ export default function LocationSharePickerModal({
     };
 
     fetchFriends();
-  }, [isOpen]);
+  }, [isOpen, showId]);
 
   // Initialize selection state when friends load or initialSelection changes
   useEffect(() => {
@@ -124,7 +133,7 @@ export default function LocationSharePickerModal({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                 </svg>
               </div>
-              <span className="text-primary font-medium">All Friends</span>
+              <span className="text-primary font-medium">{showId ? 'All Friends Here' : 'All Friends'}</span>
             </div>
             <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
               shareAll ? 'border-accent bg-accent' : 'border-muted'
@@ -146,7 +155,14 @@ export default function LocationSharePickerModal({
             </div>
           ) : friends.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-sm text-muted">No friends yet</p>
+              <p className="text-sm text-muted">
+                {showId ? 'No friends at this show yet' : 'No friends yet'}
+              </p>
+              {showId && (
+                <p className="text-xs text-muted mt-2">
+                  Your location will be shared with friends when they arrive
+                </p>
+              )}
             </div>
           ) : (
             friends.map((friend) => (
@@ -185,7 +201,7 @@ export default function LocationSharePickerModal({
             className="w-full px-4 py-2.5 bg-accent text-white rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {shareAll
-              ? 'Share with All Friends'
+              ? (friends.length === 0 && showId ? 'Share with All Friends' : (showId ? 'Share with All Friends Here' : 'Share with All Friends'))
               : selected.size === 0
                 ? 'Select Friends'
                 : `Share with ${selected.size} Friend${selected.size !== 1 ? 's' : ''}`}

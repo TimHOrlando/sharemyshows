@@ -30,6 +30,11 @@ dm_active_users = {}
 # Format: {user_id: set(sid, ...)}
 online_users = {}
 
+# Store ALL connected SIDs per user (regardless of appear_offline)
+# Used to restore online_users when toggling appear_offline back to false
+# Format: {user_id: set(sid, ...)}
+user_sids = {}
+
 
 def get_sibling_show_ids(show_id):
     """Get all show IDs for the same concert (same artist, venue, date)."""
@@ -89,6 +94,9 @@ def handle_connect():
         print("Unauthorized connection attempt")
         return False  # Reject connection
 
+    # Always track this SID (regardless of appear_offline)
+    user_sids.setdefault(user.id, set()).add(request.sid)
+
     # Track online presence (unless appearing offline)
     try:
         if not getattr(user, 'appear_offline', False):
@@ -117,21 +125,27 @@ def handle_disconnect():
     user = get_user_from_token()
 
     if user:
+        # Clean up user_sids tracking
+        if user.id in user_sids:
+            user_sids[user.id].discard(request.sid)
+            if not user_sids[user.id]:
+                del user_sids[user.id]
+
         # Clean up global online presence
         try:
-            sids = online_users.get(user.id, set())
-            sids.discard(request.sid)
-            if not sids:
-                # Last connection gone — user is truly offline
-                online_users.pop(user.id, None)
-                friend_ids = get_friend_ids(user.id)
-                for fid in friend_ids:
-                    if fid in online_users:
-                        for sid in online_users[fid]:
-                            emit('friend_offline', {
-                                'user_id': user.id,
-                                'username': user.username
-                            }, to=sid)
+            if user.id in online_users:
+                online_users[user.id].discard(request.sid)
+                if not online_users[user.id]:
+                    # Last online connection gone — user is truly offline
+                    del online_users[user.id]
+                    friend_ids = get_friend_ids(user.id)
+                    for fid in friend_ids:
+                        if fid in online_users:
+                            for sid in online_users[fid]:
+                                emit('friend_offline', {
+                                    'user_id': user.id,
+                                    'username': user.username
+                                }, to=sid)
         except Exception as e:
             print(f"Error tracking online presence on disconnect: {e}")
 
@@ -266,7 +280,39 @@ def handle_join_show(data):
         'active_users': list(active_users[show_id].values()),
         'count': len(active_users[show_id])
     })
-    
+
+    # Send current friends' locations to the joining user
+    try:
+        friend_ids = get_friend_ids(user.id)
+        sibling_ids = get_sibling_show_ids(show_id)
+        checkins = ShowCheckin.query.filter(
+            ShowCheckin.show_id.in_(sibling_ids),
+            ShowCheckin.is_active == True,
+            ShowCheckin.latitude.isnot(None),
+            ShowCheckin.longitude.isnot(None),
+            ShowCheckin.user_id.in_(friend_ids)
+        ).all()
+        friends_locs = []
+        for checkin in checkins:
+            share_ids = checkin.get_share_with_ids()
+            if share_ids is not None and user.id not in share_ids:
+                continue
+            friend = User.query.get(checkin.user_id)
+            # appear_offline doesn't block explicit location sharing —
+            # these checkins have lat/lng, so the user opted in.
+            if friend:
+                friends_locs.append({
+                    'user_id': friend.id,
+                    'username': friend.username,
+                    'latitude': checkin.latitude,
+                    'longitude': checkin.longitude,
+                    'updated_at': checkin.last_location_update.isoformat() if checkin.last_location_update else None
+                })
+        if friends_locs:
+            emit('friends_locations', {'friends': friends_locs})
+    except Exception as e:
+        print(f"Error sending friends locations on join: {e}")
+
     print(f"{user.username} joined show {show_id} chat (Room: {room_name})")
 
 
@@ -484,12 +530,14 @@ def handle_update_location(data):
         if 'share_with' in data:
             checkin.set_share_with(data['share_with'])
 
+        # Explicitly sharing location overrides appear_offline —
+        # the user clicked "Share My Location" which is an active choice.
         checkin.latitude = latitude
         checkin.longitude = longitude
         checkin.last_location_update = datetime.utcnow()
         db.session.commit()
 
-        # Emit location to accepted friends across all sibling shows (same concert)
+        # Broadcast location to accepted friends
         friend_ids = get_friend_ids(user.id)
         share_ids = checkin.get_share_with_ids()  # None = all friends
         sibling_ids = get_sibling_show_ids(show_id)
@@ -595,6 +643,8 @@ def handle_get_friends_locations(data):
         if share_ids is not None and user.id not in share_ids:
             continue
         friend = User.query.get(checkin.user_id)
+        # appear_offline doesn't block explicit location sharing —
+        # these checkins have lat/lng, so the user opted in.
         if friend:
             friends.append({
                 'user_id': friend.id,
@@ -816,6 +866,36 @@ def handle_set_appear_offline(data):
                             'user_id': user.id,
                             'username': user.username
                         }, to=sid)
+                # Hide from friends-going lists
+                for sid in user_sids.get(fid, set()):
+                    emit('friend_hide_from_show', {
+                        'user_id': user.id,
+                        'username': user.username
+                    }, to=sid)
+
+        # Also stop any active location sharing so friends don't see us in "Friends Here"
+        active_checkins = ShowCheckin.query.filter_by(
+            user_id=user.id,
+            is_active=True
+        ).filter(ShowCheckin.latitude.isnot(None)).all()
+        for checkin in active_checkins:
+            share_ids = checkin.get_share_with_ids()
+            checkin.latitude = None
+            checkin.longitude = None
+            checkin.last_location_update = None
+            checkin.share_with = None
+            db.session.commit()
+
+            # Notify friends in sibling shows that location stopped
+            sibling_ids = get_sibling_show_ids(checkin.show_id)
+            for sid in sibling_ids:
+                if sid in active_users:
+                    for friend_id, info in active_users[sid].items():
+                        if friend_id in friend_ids and (share_ids is None or friend_id in share_ids):
+                            emit('location_stopped', {
+                                'user_id': user.id,
+                                'username': user.username
+                            }, to=info['sid'])
     else:
         # Add current SID and tell friends we came online
         online_users.setdefault(user.id, set()).add(request.sid)
@@ -826,6 +906,12 @@ def handle_set_appear_offline(data):
                         'user_id': user.id,
                         'username': user.username
                     }, to=sid)
+            # Re-show on friends-going lists
+            for sid in user_sids.get(fid, set()):
+                emit('friend_show_at_show', {
+                    'user_id': user.id,
+                    'username': user.username
+                }, to=sid)
 
     emit('appear_offline_updated', {'appear_offline': appear_offline})
 

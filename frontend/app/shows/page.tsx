@@ -58,6 +58,7 @@ function ShowsContent() {
   const [filterLabel, setFilterLabel] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'artist_asc' | 'venue_asc'>('date_desc');
+  const [deletingShowId, setDeletingShowId] = useState<number | null>(null);
 
   const artistId = searchParams.get('artist_id');
   const venueId = searchParams.get('venue_id');
@@ -117,6 +118,21 @@ function ShowsContent() {
 
   const handleShowClick = (showId: number) => {
     router.push(`/shows/${showId}`);
+  };
+
+  const handleDeleteShow = async (e: React.MouseEvent, showId: number) => {
+    e.stopPropagation();
+    if (!confirm('Are you sure you want to delete this show? This cannot be undone.')) return;
+    setDeletingShowId(showId);
+    try {
+      await api.delete(`/shows/${showId}`);
+      setShows(prev => prev.filter(s => s.id !== showId));
+    } catch (error) {
+      console.error('Failed to delete show:', error);
+      alert('Failed to delete show');
+    } finally {
+      setDeletingShowId(null);
+    }
   };
 
   const formatDate = (dateString: string) => {
@@ -283,13 +299,27 @@ function ShowsContent() {
                 <div
                   key={show.id}
                   onClick={() => handleShowClick(show.id)}
-                  className="bg-secondary rounded-xl overflow-hidden cursor-pointer transition-all hover:scale-[1.02] hover:bg-tertiary active:scale-[0.98]"
+                  className="group bg-secondary rounded-xl overflow-hidden cursor-pointer transition-all hover:scale-[1.02] hover:bg-tertiary active:scale-[0.98]"
                 >
                   {/* Gradient Header */}
-                  <div className="px-5 py-3" style={{ background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-muted))' }}>
+                  <div className="relative px-5 py-3" style={{ background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-muted))' }}>
                     <p className="text-white/90 text-sm font-medium">
                       {formatDate(show.date)}
                     </p>
+                    <button
+                      onClick={(e) => handleDeleteShow(e, show.id)}
+                      disabled={deletingShowId === show.id}
+                      className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/0 text-white/0 opacity-0 group-hover:opacity-100 group-hover:text-white/70 hover:!bg-red-500/20 hover:!text-red-300 transition-all duration-200"
+                      title="Delete show"
+                    >
+                      {deletingShowId === show.id ? (
+                        <div className="w-4 h-4 animate-spin rounded-full border-2 border-red-300 border-t-transparent" />
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      )}
+                    </button>
                   </div>
 
                   {/* Card Body */}

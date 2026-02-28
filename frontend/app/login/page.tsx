@@ -96,7 +96,7 @@ export default function LoginPage() {
                 required
                 value={formData.login}
                 onChange={(e) => setFormData({ ...formData, login: e.target.value })}
-                className={`mt-1 appearance-none relative block w-full px-3 py-2 border ${
+                className={`mt-1 appearance-none relative block w-full px-3 py-3 border ${
                   errors.login ? 'border-red-500' : 'border-theme'
                 } placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm`}
                 placeholder="johndoe or john@example.com"
@@ -120,7 +120,7 @@ export default function LoginPage() {
                   required
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className={`mt-1 appearance-none relative block w-full px-3 py-2 pr-10 border ${
+                  className={`mt-1 appearance-none relative block w-full px-3 py-3 pr-12 border ${
                     errors.password ? 'border-red-500' : 'border-theme'
                   } placeholder-muted text-primary bg-secondary rounded-md focus:outline-none focus:ring-accent focus:border-accent focus:z-10 sm:text-sm`}
                   placeholder="••••••••"
@@ -128,7 +128,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center w-10 justify-center"
                 >
                   {showPassword ? (
                     <svg className="h-5 w-5 text-muted hover:text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -152,7 +152,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={isLoading}
-              className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
+              className={`group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white ${
                 isLoading
                   ? 'bg-accent opacity-50 cursor-not-allowed'
                   : 'bg-accent hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent'

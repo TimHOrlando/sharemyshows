@@ -501,7 +501,7 @@ export default function MessagesPage() {
                     return (
                       <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
                         <div
-                          className={`max-w-[75%] rounded-2xl px-4 py-2 ${
+                          className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-2 ${
                             isMine
                               ? 'bg-accent text-white rounded-br-sm'
                               : 'bg-secondary text-primary rounded-bl-sm'

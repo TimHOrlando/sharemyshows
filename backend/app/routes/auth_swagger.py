@@ -15,7 +15,7 @@ import string
 import socket
 import re
 
-from app.models import db, User
+from app.models import db, User, ShowCheckin
 
 api = Namespace('auth', description='Authentication operations with email MFA')
 
@@ -843,8 +843,95 @@ class AppearOffline(Resource):
             return {'error': 'User not found'}, 404
 
         data = request.get_json()
-        user.appear_offline = bool(data.get('appear_offline', False))
+        appear_offline = bool(data.get('appear_offline', False))
+        user.appear_offline = appear_offline
         db.session.commit()
+
+        if appear_offline:
+            # Clear active location sharing so user disappears from "Friends Here"
+            active_checkins = ShowCheckin.query.filter_by(
+                user_id=user.id,
+                is_active=True
+            ).filter(ShowCheckin.latitude.isnot(None)).all()
+            for checkin in active_checkins:
+                checkin.latitude = None
+                checkin.longitude = None
+                checkin.last_location_update = None
+                checkin.share_with = None
+            db.session.commit()
+
+            # Notify friends via WebSocket that location stopped and user went offline
+            from app import socketio
+            from app.socket_events import online_users, active_users, get_sibling_show_ids, user_sids
+            from app.models import get_friend_ids
+
+            friend_ids = get_friend_ids(user.id)
+
+            # Tell the user's own sessions to stop location tracking
+            sids_before = set(online_users.get(user.id, set()))
+            online_users.pop(user.id, None)
+            for sid in sids_before:
+                socketio.emit('appear_offline_updated', {'appear_offline': True}, to=sid)
+
+            # Tell friends we went offline and hide from show lists
+            for fid in friend_ids:
+                if fid in online_users:
+                    for sid in online_users[fid]:
+                        socketio.emit('friend_offline', {
+                            'user_id': user.id,
+                            'username': user.username
+                        }, to=sid)
+                # Send hide event to ALL connected sids (not just online_users)
+                for sid in user_sids.get(fid, set()):
+                    socketio.emit('friend_hide_from_show', {
+                        'user_id': user.id,
+                        'username': user.username
+                    }, to=sid)
+
+            # Broadcast location_stopped to friends in active show rooms
+            for checkin in active_checkins:
+                sibling_ids = get_sibling_show_ids(checkin.show_id)
+                for sid in sibling_ids:
+                    if sid in active_users:
+                        for friend_id, info in active_users[sid].items():
+                            if friend_id in friend_ids:
+                                socketio.emit('location_stopped', {
+                                    'user_id': user.id,
+                                    'username': user.username
+                                }, to=info['sid'])
+
+        else:
+            # Going back online — restore presence from connected sockets
+            from app import socketio
+            from app.socket_events import online_users, user_sids
+            from app.models import get_friend_ids
+
+            sids = user_sids.get(user.id, set())
+            if sids:
+                was_empty = not online_users.get(user.id)
+                online_users[user.id] = set(sids)
+
+                # Notify own sockets
+                for sid in sids:
+                    socketio.emit('appear_offline_updated', {'appear_offline': False}, to=sid)
+
+                # Notify friends we came back online and re-show on show lists
+                if was_empty:
+                    friend_ids = get_friend_ids(user.id)
+                    for fid in friend_ids:
+                        if fid in online_users:
+                            for sid in online_users[fid]:
+                                socketio.emit('friend_online', {
+                                    'user_id': user.id,
+                                    'username': user.username
+                                }, to=sid)
+                        # Send show_at_show event to ALL connected sids
+                        for sid in user_sids.get(fid, set()):
+                            socketio.emit('friend_show_at_show', {
+                                'user_id': user.id,
+                                'username': user.username
+                            }, to=sid)
+
         return {'message': 'Appear offline status updated', 'appear_offline': user.appear_offline}
 
 

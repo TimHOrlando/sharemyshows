@@ -145,7 +145,7 @@ export default function DashboardPage() {
           {/* Stats Bar */}
           {loading ? (
             <div className="bg-secondary rounded-xl p-4 mb-6">
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
                 {[...Array(6)].map((_, i) => (
                   <div key={i} className="animate-pulse">
                     <div className="h-4 bg-tertiary rounded w-1/2 mb-2"></div>
@@ -156,7 +156,7 @@ export default function DashboardPage() {
             </div>
           ) : stats ? (
             <div className="bg-secondary rounded-xl p-4 mb-6">
-              <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
                 <StatItem type="shows" label="Shows" value={stats.total_shows} onClick={() => router.push('/shows')} />
                 <StatItem type="artists" label="Artists" value={stats.total_artists} onClick={() => router.push('/artists')} />
                 <StatItem type="venues" label="Venues" value={stats.total_venues} onClick={() => router.push('/venues')} />

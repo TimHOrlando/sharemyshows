@@ -84,12 +84,14 @@ interface Show {
   comment_count?: number;
 }
 
-interface NearbyUser {
+interface FriendGoing {
   id: number;
   username: string;
-  distance?: string;
-  last_seen: string;
-  is_friend: boolean;
+  status: 'online' | 'offline';
+  is_sharing_location: boolean;
+  latitude?: number;
+  longitude?: number;
+  show_id: number;
 }
 
 export default function ShowDetailPage() {
@@ -156,7 +158,7 @@ export default function ShowDetailPage() {
   const [newComment, setNewComment] = useState('');
 
   // People/presence state
-  const [nearbyUsers, setNearbyUsers] = useState<NearbyUser[]>([]);
+  const [friendsGoing, setFriendsGoing] = useState<FriendGoing[]>([]);
   const [, setLocationEnabled] = useState(false);
   const [sharingLocation, setSharingLocation] = useState(false);
 
@@ -165,12 +167,18 @@ export default function ShowDetailPage() {
   // Share picker state
   const [sharePickerOpen, setSharePickerOpen] = useState(false);
   const [shareWithIds, setShareWithIds] = useState<number[] | null>(null);
+  const shareWithIdsRef = useRef<number[] | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const locationEmitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Online presence for Friends Here
-  const [onlineFriendIds, setOnlineFriendIds] = useState<Set<number>>(new Set());
+  // Online presence for Friends Here (used by socket handlers)
+  const [, setOnlineFriendIds] = useState<Set<number>>(new Set());
+
+  // Keep shareWithIdsRef in sync with state so interval closures see current value
+  useEffect(() => {
+    shareWithIdsRef.current = shareWithIds;
+  }, [shareWithIds]);
 
   // Toast notification state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
@@ -210,6 +218,11 @@ export default function ShowDetailPage() {
 
     socket.on('connect', () => {
       socket.emit('join_show', { show_id: parseInt(showId) });
+      // Fetch after socket connects so server's online_users is current
+      // and this won't overwrite later socket events
+      api.get(`/shows/${showId}/friends-going`).then(res => {
+        setFriendsGoing(res.data.friends || []);
+      }).catch(() => {});
     });
 
     socket.on('comment_added', (data: { show_id: number; photo_id?: number; comment: Comment }) => {
@@ -224,32 +237,66 @@ export default function ShowDetailPage() {
       }
     });
 
-    // Location sharing events
+    // Location sharing events - update friendsGoing
     socket.on('location_update', (data: { user_id: number; username: string; latitude: number; longitude: number }) => {
-      setNearbyUsers(prev => {
-        const idx = prev.findIndex(u => u.id === data.user_id);
-        const updated: NearbyUser = {
-          id: data.user_id,
-          username: data.username,
-          last_seen: new Date().toISOString(),
-          is_friend: true,
-        };
+      setFriendsGoing(prev => {
+        const idx = prev.findIndex(f => f.id === data.user_id);
         if (idx >= 0) {
           const next = [...prev];
-          next[idx] = updated;
+          next[idx] = { ...next[idx], is_sharing_location: true, latitude: data.latitude, longitude: data.longitude };
           return next;
         }
-        return [...prev, updated];
+        // Friend not in list yet (joined after we loaded) — add them
+        return [...prev, {
+          id: data.user_id,
+          username: data.username,
+          status: 'online' as const,
+          is_sharing_location: true,
+          latitude: data.latitude,
+          longitude: data.longitude,
+          show_id: 0,
+        }];
       });
     });
 
     socket.on('location_stopped', (data: { user_id: number }) => {
-      setNearbyUsers(prev => prev.filter(u => u.id !== data.user_id));
+      setFriendsGoing(prev => prev.map(f =>
+        f.id === data.user_id
+          ? { ...f, is_sharing_location: false, latitude: undefined, longitude: undefined }
+          : f
+      ));
     });
 
-    // Friend online presence events
+    // Initial friends' locations sent on join_show — update sharing status
+    socket.on('friends_locations', (data: { friends: Array<{ user_id: number; username: string; latitude: number; longitude: number }> }) => {
+      setFriendsGoing(prev => {
+        const updated = [...prev];
+        for (const f of data.friends) {
+          const idx = updated.findIndex(fg => fg.id === f.user_id);
+          if (idx >= 0) {
+            updated[idx] = { ...updated[idx], is_sharing_location: true, latitude: f.latitude, longitude: f.longitude };
+          } else {
+            updated.push({
+              id: f.user_id,
+              username: f.username,
+              status: 'online' as const,
+              is_sharing_location: true,
+              latitude: f.latitude,
+              longitude: f.longitude,
+              show_id: 0,
+            });
+          }
+        }
+        return updated;
+      });
+    });
+
+    // Friend online presence events - update friendsGoing status
     socket.on('friend_online', (data: { user_id: number }) => {
       setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
+      setFriendsGoing(prev => prev.map(f =>
+        f.id === data.user_id ? { ...f, status: 'online' as const } : f
+      ));
     });
 
     socket.on('friend_offline', (data: { user_id: number }) => {
@@ -258,6 +305,21 @@ export default function ShowDetailPage() {
         next.delete(data.user_id);
         return next;
       });
+      setFriendsGoing(prev => prev.map(f =>
+        f.id === data.user_id ? { ...f, status: 'offline' as const } : f
+      ));
+    });
+
+    // Appear offline: friend hides from all show lists
+    socket.on('friend_hide_from_show', (data: { user_id: number }) => {
+      setFriendsGoing(prev => prev.filter(f => f.id !== data.user_id));
+    });
+
+    // Appear online again: refresh friends-going from API
+    socket.on('friend_show_at_show', () => {
+      api.get(`/shows/${showId}/friends-going`).then(res => {
+        setFriendsGoing(res.data.friends || []);
+      }).catch(() => {});
     });
 
     // Fetch initial online friends
@@ -549,6 +611,7 @@ export default function ShowDetailPage() {
                 show_id: parseInt(showId),
                 latitude: pos.coords.latitude,
                 longitude: pos.coords.longitude,
+                share_with: shareWithIdsRef.current,
               });
             },
             () => {},
@@ -566,7 +629,10 @@ export default function ShowDetailPage() {
         localStorage.removeItem(`share_with_${showId}`);
       }
 
-      fetchNearbyUsers();
+      // Refresh friends going list
+      api.get(`/shows/${showId}/friends-going`).then(res => {
+        setFriendsGoing(res.data.friends || []);
+      }).catch(() => {});
 
       if (!isResume) {
         showToast('Location sharing enabled', 'success');
@@ -650,7 +716,7 @@ export default function ShowDetailPage() {
     );
   };
 
-  // Resume location sharing on mount if previously active
+  // Resume location sharing on page refresh if the user had it enabled
   useEffect(() => {
     const wasSharing = localStorage.getItem(`sharing_location_${showId}`);
     if (wasSharing === 'true') {
@@ -659,16 +725,8 @@ export default function ShowDetailPage() {
       setShareWithIds(parsedShareWith);
       startLocationTracking(true, parsedShareWith);
     }
-  }, [showId]);
+  }, [showId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchNearbyUsers = async () => {
-    try {
-      const response = await api.get(`/shows/${showId}/presence`);
-      setNearbyUsers(response.data.users || []);
-    } catch (error) {
-      console.error('Failed to fetch nearby users:', error);
-    }
-  };
 
   // Video functions
   const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1079,12 +1137,12 @@ export default function ShowDetailPage() {
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-2 mb-6 border-b border-theme">
+          <div className="flex gap-2 mb-6 border-b border-theme overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`px-4 py-3 font-medium text-sm transition-colors relative ${
+                className={`px-4 py-3 font-medium text-sm transition-colors relative whitespace-nowrap ${
                   activeTab === tab
                     ? 'text-accent'
                     : 'text-secondary hover:text-primary'
@@ -1164,7 +1222,7 @@ export default function ShowDetailPage() {
 
                 {showSongDetails && (
                   <div className="mt-2 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <input
                         type="text"
                         value={newSongDuration}
@@ -1761,69 +1819,57 @@ export default function ShowDetailPage() {
                 )}
               </div>
 
-              {sharingLocation ? (
-                nearbyUsers.filter(u => u.is_friend).length > 0 ? (
-                  <div className="bg-secondary rounded-xl overflow-hidden">
-                    <div className="px-4 py-3 border-b border-theme">
-                      <h3 className="font-medium text-primary">Friends at this show</h3>
-                    </div>
-                    {nearbyUsers.filter(u => u.is_friend).map((person) => (
-                      <div
-                        key={person.id}
-                        className="flex items-center gap-4 px-4 py-3 border-b border-theme last:border-b-0 hover:bg-tertiary transition-colors"
-                      >
-                        <div className="relative">
-                          <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
-                            <span className="text-sm font-bold text-accent">
-                              {person.username.charAt(0).toUpperCase()}
-                            </span>
-                          </div>
-                          <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-secondary ${
-                            onlineFriendIds.has(person.id) ? 'bg-green-500' : 'bg-gray-500'
-                          }`} />
+              {friendsGoing.length > 0 ? (
+                <div className="bg-secondary rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-theme">
+                    <h3 className="font-medium text-primary">Friends going to this show</h3>
+                  </div>
+                  {friendsGoing.map((friend) => (
+                    <div
+                      key={friend.id}
+                      className="flex items-center gap-4 px-4 py-3 border-b border-theme last:border-b-0 hover:bg-tertiary transition-colors"
+                    >
+                      <div className="relative">
+                        <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
+                          <span className="text-sm font-bold text-accent">
+                            {friend.username.charAt(0).toUpperCase()}
+                          </span>
                         </div>
-                        <div className="flex-1">
-                          <p className="text-primary font-medium">{person.username}</p>
-                          {person.distance && (
-                            <p className="text-sm text-muted">{person.distance} away</p>
-                          )}
-                        </div>
-                        <span className={`px-3 py-1 text-xs font-medium rounded-full ${
-                          onlineFriendIds.has(person.id)
-                            ? 'text-green-400 bg-green-500/20'
-                            : 'text-gray-400 bg-gray-500/20'
-                        }`}>
-                          {onlineFriendIds.has(person.id) ? 'Online' : 'Offline'}
-                        </span>
+                        <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-secondary ${
+                          friend.status === 'online' ? 'bg-green-500' : 'bg-gray-400'
+                        }`} />
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="bg-secondary rounded-xl p-8 text-center">
-                    <svg className="w-12 h-12 text-muted mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    <p className="text-secondary">No friends here yet</p>
-                    <p className="text-sm text-muted mt-1">Friends sharing their location will appear here</p>
-                  </div>
-                )
+                      <div className="flex-1">
+                        <p className="text-primary font-medium">{friend.username}</p>
+                      </div>
+                      {friend.is_sharing_location ? (
+                        <span className="px-3 py-1 text-xs font-medium rounded-full text-green-400 bg-green-500/20">
+                          On map
+                        </span>
+                      ) : friend.status === 'online' ? (
+                        <span className="px-3 py-1 text-xs font-medium rounded-full text-green-400 bg-green-500/10">
+                          Online
+                        </span>
+                      ) : (
+                        <span className="px-3 py-1 text-xs font-medium rounded-full text-muted bg-tertiary">
+                          Going
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="bg-secondary rounded-xl p-8 text-center">
                   <svg className="w-12 h-12 text-muted mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
-                  <p className="text-secondary">Enable location sharing</p>
-                  <p className="text-sm text-muted mt-1">Find friends and meet others at the show</p>
+                  <p className="text-secondary">No friends going to this show yet</p>
+                  <p className="text-sm text-muted mt-1">Friends who add this same show will appear here</p>
                 </div>
               )}
 
-              {sharingLocation && (
+              {friendsGoing.some(f => f.is_sharing_location) && (
                 <div className="bg-secondary rounded-xl p-4">
-                  <h3 className="font-medium text-primary mb-3">Find My Friends</h3>
-                  <p className="text-sm text-muted mb-4">
-                    Friends who are sharing their location at this show will appear here with directions to find them.
-                  </p>
                   <button
                     onClick={() => setFriendMapOpen(true)}
                     className="w-full px-4 py-3 bg-tertiary text-secondary hover:text-primary rounded-lg transition-colors flex items-center justify-center gap-2"
@@ -2074,6 +2120,7 @@ export default function ShowDetailPage() {
           onClose={() => setSharePickerOpen(false)}
           onConfirm={sharingLocation ? handleSharePickerUpdate : handleSharePickerConfirm}
           initialSelection={shareWithIds}
+          showId={parseInt(showId)}
         />
 
         <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />

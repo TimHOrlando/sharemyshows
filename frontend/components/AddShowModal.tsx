@@ -25,8 +25,13 @@ interface ArtistSearchResult {
   sort_name: string;
 }
 
+interface Friend {
+  id: number;
+  username: string;
+}
+
 export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModalProps) {
-  const [step, setStep] = useState<'venue' | 'artist' | 'details'>('venue');
+  const [step, setStep] = useState<'venue' | 'artist' | 'details' | 'notify'>('venue');
 
   // Venue search
   const [venueQuery, setVenueQuery] = useState('');
@@ -48,6 +53,13 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
   // Form state
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  // Share with friends state
+  const [createdShowId, setCreatedShowId] = useState<number | null>(null);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [selectedFriendIds, setSelectedFriendIds] = useState<Set<number>>(new Set());
+  const [shareWithAll, setShareWithAll] = useState(true);
+  const [notifying, setNotifying] = useState(false);
 
   useEffect(() => {
     if (venueQuery.length >= 2) {
@@ -158,6 +170,7 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
       );
 
       const showId = response.data.id;
+      setCreatedShowId(showId);
 
       // Auto-populate setlist for past shows (fire-and-forget)
       const today = new Date();
@@ -171,10 +184,24 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
         });
       }
 
-      // Reset form
-      resetForm();
-      onSuccess?.(showId);
-      onClose();
+      // Fetch friends for share step
+      try {
+        const friendsRes = await api.get('/friends');
+        const acceptedFriends = (friendsRes.data.friends || [])
+          .filter((f: { status: string }) => f.status === 'accepted')
+          .map((f: { friend: { id: number; username: string } }) => ({
+            id: f.friend.id,
+            username: f.friend.username,
+          }));
+        setFriends(acceptedFriends);
+        // Default: all friends selected
+        setSelectedFriendIds(new Set(acceptedFriends.map((f: Friend) => f.id)));
+        setShareWithAll(true);
+      } catch {
+        setFriends([]);
+      }
+
+      setStep('notify');
     } catch (err) {
       setError((err as { response?: { data?: { error?: string } } }).response?.data?.error || 'Failed to create show');
     } finally {
@@ -194,6 +221,11 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
     setNotes('');
     setRating('');
     setError('');
+    setCreatedShowId(null);
+    setFriends([]);
+    setSelectedFriendIds(new Set());
+    setShareWithAll(true);
+    setNotifying(false);
   };
 
   const handleClose = () => {
@@ -205,7 +237,7 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
 
   return (
     <div className="fixed inset-0 bg-elevated bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center p-4">
-      <div className="relative bg-card rounded-lg shadow-theme-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="relative bg-card rounded-lg shadow-theme-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="sticky top-0 bg-card border-b border-theme px-6 py-4 flex justify-between items-center">
           <h2 className="text-2xl font-bold text-primary">Add Show</h2>
@@ -223,15 +255,18 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
         <div className="px-6 py-4 bg-secondary border-b border-theme">
           <div className="flex items-center justify-center space-x-2">
             <StepIndicator active={step === 'venue'} completed={selectedVenue !== null} label="1" />
-            <div className={`h-0.5 w-16 ${selectedVenue ? 'bg-accent' : 'bg-tertiary'}`} />
+            <div className={`h-0.5 w-12 ${selectedVenue ? 'bg-accent' : 'bg-tertiary'}`} />
             <StepIndicator active={step === 'artist'} completed={selectedArtist !== null} label="2" />
-            <div className={`h-0.5 w-16 ${selectedArtist ? 'bg-accent' : 'bg-tertiary'}`} />
-            <StepIndicator active={step === 'details'} completed={false} label="3" />
+            <div className={`h-0.5 w-12 ${selectedArtist ? 'bg-accent' : 'bg-tertiary'}`} />
+            <StepIndicator active={step === 'details'} completed={step === 'notify'} label="3" />
+            <div className={`h-0.5 w-12 ${step === 'notify' ? 'bg-accent' : 'bg-tertiary'}`} />
+            <StepIndicator active={step === 'notify'} completed={false} label="4" />
           </div>
           <div className="flex justify-center mt-2 text-sm text-secondary">
             {step === 'venue' && 'Select Venue'}
             {step === 'artist' && 'Select Artist'}
             {step === 'details' && 'Show Details'}
+            {step === 'notify' && 'Share with Friends'}
           </div>
         </div>
 
@@ -440,6 +475,162 @@ export default function AddShowModal({ isOpen, onClose, onSuccess }: AddShowModa
                 </div>
               </div>
             </form>
+          )}
+
+          {/* Step 4: Share with Friends */}
+          {step === 'notify' && (
+            <div className="space-y-4">
+              <div className="p-4 bg-secondary rounded-lg text-center">
+                <svg className="w-10 h-10 text-accent mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <p className="font-semibold text-primary">Show added!</p>
+                <p className="text-sm text-secondary mt-1">
+                  {selectedArtist?.name} at {selectedVenue?.name}
+                </p>
+              </div>
+
+              {friends.length > 0 ? (
+                <>
+                  <p className="text-sm text-secondary">Who can see this show?</p>
+
+                  {/* Share with All toggle */}
+                  <div className="flex items-center justify-between bg-secondary rounded-xl px-4 py-3">
+                    <div>
+                      <p className="text-primary font-medium text-sm">Share with All Friends</p>
+                      <p className="text-xs text-muted">All friends can see this show in their feed</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newVal = !shareWithAll;
+                        setShareWithAll(newVal);
+                        if (newVal) {
+                          setSelectedFriendIds(new Set(friends.map(f => f.id)));
+                        } else {
+                          setSelectedFriendIds(new Set());
+                        }
+                      }}
+                      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors flex-shrink-0 ${
+                        shareWithAll ? 'bg-accent' : 'bg-tertiary'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform ${
+                          shareWithAll ? 'translate-x-6' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Individual friend checkboxes (shown when not sharing with all) */}
+                  {!shareWithAll && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-muted">Select specific friends:</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (selectedFriendIds.size === friends.length) {
+                              setSelectedFriendIds(new Set());
+                            } else {
+                              setSelectedFriendIds(new Set(friends.map(f => f.id)));
+                            }
+                          }}
+                          className="text-xs text-accent hover:underline"
+                        >
+                          {selectedFriendIds.size === friends.length ? 'Deselect all' : 'Select all'}
+                        </button>
+                      </div>
+
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {friends.map((friend) => (
+                          <label
+                            key={friend.id}
+                            className="flex items-center gap-3 p-3 bg-secondary rounded-lg cursor-pointer hover:bg-hover transition-colors"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedFriendIds.has(friend.id)}
+                              onChange={() => {
+                                setSelectedFriendIds(prev => {
+                                  const next = new Set(prev);
+                                  if (next.has(friend.id)) {
+                                    next.delete(friend.id);
+                                  } else {
+                                    next.add(friend.id);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className="w-4 h-4 rounded border-theme text-accent focus:ring-accent"
+                            />
+                            <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center flex-shrink-0">
+                              <span className="text-xs font-bold text-accent">
+                                {friend.username.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                            <span className="text-primary text-sm">{friend.username}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted text-center py-4">No friends yet. Add friends to share your shows!</p>
+              )}
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Skip = visible to all, no notifications
+                    resetForm();
+                    onSuccess?.(createdShowId ?? undefined);
+                    onClose();
+                  }}
+                  className="flex-1 px-4 py-2 border border-theme rounded-md text-secondary hover:bg-secondary"
+                >
+                  Skip
+                </button>
+                {friends.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={notifying || (!shareWithAll && selectedFriendIds.size === 0)}
+                    onClick={async () => {
+                      if (!createdShowId) return;
+                      setNotifying(true);
+                      try {
+                        // Set visibility on the show
+                        const visibleTo = shareWithAll ? null : Array.from(selectedFriendIds);
+                        await api.put(`/shows/${createdShowId}/visibility`, {
+                          visible_to: visibleTo,
+                        });
+
+                        // Notify selected friends
+                        const notifyIds = Array.from(selectedFriendIds);
+                        if (notifyIds.length > 0) {
+                          await api.post(`/shows/${createdShowId}/notify-friends`, {
+                            friend_ids: notifyIds,
+                          });
+                        }
+                      } catch {
+                        // best-effort
+                      }
+                      resetForm();
+                      onSuccess?.(createdShowId);
+                      onClose();
+                    }}
+                    className="flex-1 px-4 py-2 bg-accent text-white rounded-md hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {notifying ? 'Sharing...' : shareWithAll
+                      ? `Share & Notify ${selectedFriendIds.size} Friend${selectedFriendIds.size !== 1 ? 's' : ''}`
+                      : `Share with ${selectedFriendIds.size} Friend${selectedFriendIds.size !== 1 ? 's' : ''}`}
+                  </button>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>

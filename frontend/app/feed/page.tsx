@@ -60,7 +60,7 @@ export default function FeedPage() {
       <div className="min-h-screen bg-primary">
         <Navbar onOpenSettings={() => setIsSettingsOpen(true)} />
 
-        <main className="max-w-4xl mx-auto py-6 px-4">
+        <main className="max-w-4xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-primary">Friend Activity</h1>
             <p className="text-secondary mt-1">Shows from your friends</p>
@@ -123,7 +123,7 @@ export default function FeedPage() {
 
               {/* Pagination */}
               {totalPages > 1 && (
-                <div className="flex items-center justify-center gap-4 pt-4">
+                <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
                   <button
                     onClick={() => setPage(p => Math.max(1, p - 1))}
                     disabled={page === 1}

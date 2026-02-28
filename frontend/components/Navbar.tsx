@@ -1,13 +1,23 @@
-﻿'use client';
+'use client';
 
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/lib/api';
 
 interface NavbarProps {
   onOpenSettings?: () => void;
+}
+
+interface NotificationItem {
+  id: number;
+  type: string;
+  message: string;
+  data: { show_id?: number; artist?: string; venue?: string; date?: string };
+  from_user: { id: number; username: string } | null;
+  read: boolean;
+  created_at: string;
 }
 
 export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
@@ -18,10 +28,21 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [unreadDMs, setUnreadDMs] = useState(0);
 
+  // Notification state
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [notifDropdownOpen, setNotifDropdownOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [loadingNotifs, setLoadingNotifs] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
   const fetchUnreadCount = useCallback(async () => {
     try {
-      const res = await api.get('/dm/unread-count');
-      setUnreadDMs(res.data.unread_count || 0);
+      const [dmRes, notifRes] = await Promise.all([
+        api.get('/dm/unread-count'),
+        api.get('/notifications/unread-count'),
+      ]);
+      setUnreadDMs(dmRes.data.unread_count || 0);
+      setUnreadNotifications(notifRes.data.unread_count || 0);
     } catch {
       // ignore
     }
@@ -33,6 +54,62 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
     const interval = setInterval(fetchUnreadCount, 30000);
     return () => clearInterval(interval);
   }, [user, fetchUnreadCount]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const openNotifDropdown = async () => {
+    if (notifDropdownOpen) {
+      setNotifDropdownOpen(false);
+      return;
+    }
+    setNotifDropdownOpen(true);
+    setLoadingNotifs(true);
+    try {
+      const res = await api.get('/notifications?per_page=10');
+      setNotifications(res.data.notifications || []);
+    } catch {
+      setNotifications([]);
+    } finally {
+      setLoadingNotifs(false);
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await api.put('/notifications/mark-read');
+      setUnreadNotifications(0);
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleNotifClick = async (notif: NotificationItem) => {
+    // Mark as read
+    if (!notif.read) {
+      try {
+        await api.put(`/notifications/${notif.id}/read`);
+        setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, read: true } : n));
+        setUnreadNotifications(prev => Math.max(0, prev - 1));
+      } catch {
+        // ignore
+      }
+    }
+    // Navigate
+    if (notif.type === 'show_added' && notif.data.show_id) {
+      setNotifDropdownOpen(false);
+      router.push(`/shows/${notif.data.show_id}`);
+    }
+  };
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -55,6 +132,17 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
     { href: '/messages', label: 'Messages', badge: unreadDMs },
     { href: '/friends', label: 'Friends' },
   ];
+
+  const formatTimeAgo = (dateStr: string) => {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  };
 
   return (
     <nav className="bg-secondary border-b border-theme sticky top-0 z-50">
@@ -99,7 +187,74 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
                 <span className="hidden sm:block text-sm text-secondary px-3">
                   {user.username}
                 </span>
-                
+
+                {/* Notification Bell */}
+                <div className="relative" ref={notifRef}>
+                  <button
+                    onClick={openNotifDropdown}
+                    className="p-2 rounded-full text-secondary hover:text-primary hover:bg-hover transition-colors touch-target relative"
+                    title="Notifications"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                    </svg>
+                    {unreadNotifications > 0 && (
+                      <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                        {unreadNotifications > 99 ? '99+' : unreadNotifications}
+                      </span>
+                    )}
+                  </button>
+
+                  {/* Notification Dropdown */}
+                  {notifDropdownOpen && (
+                    <div className="fixed left-4 right-4 top-[4.5rem] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 bg-secondary border border-theme rounded-xl shadow-lg overflow-hidden z-50">
+                      <div className="px-4 py-3 border-b border-theme flex items-center justify-between">
+                        <h3 className="font-medium text-primary text-sm">Notifications</h3>
+                        {unreadNotifications > 0 && (
+                          <button
+                            onClick={handleMarkAllRead}
+                            className="text-xs text-accent hover:underline"
+                          >
+                            Mark all read
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-80 overflow-y-auto">
+                        {loadingNotifs ? (
+                          <div className="p-4 text-center text-sm text-muted">Loading...</div>
+                        ) : notifications.length === 0 ? (
+                          <div className="p-4 text-center text-sm text-muted">No notifications yet</div>
+                        ) : (
+                          notifications.map((notif) => (
+                            <button
+                              key={notif.id}
+                              onClick={() => handleNotifClick(notif)}
+                              className={`w-full text-left px-4 py-3 border-b border-theme last:border-b-0 hover:bg-hover transition-colors ${
+                                !notif.read ? 'bg-accent/5' : ''
+                              }`}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                                  <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z" />
+                                  </svg>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-primary leading-snug">{notif.message}</p>
+                                  <p className="text-xs text-muted mt-1">{formatTimeAgo(notif.created_at)}</p>
+                                </div>
+                                {!notif.read && (
+                                  <span className="w-2 h-2 rounded-full bg-accent flex-shrink-0 mt-2" />
+                                )}
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <button
                   onClick={onOpenSettings}
                   className="p-2 rounded-full text-secondary hover:text-primary hover:bg-hover transition-colors touch-target"
@@ -110,7 +265,7 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   </svg>
                 </button>
-                
+
                 <button
                   onClick={handleLogout}
                   disabled={isLoggingOut}
@@ -170,7 +325,3 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
     </nav>
   );
 }
-
-
-
-

@@ -152,6 +152,7 @@ class Show(db.Model):
     time = db.Column(db.Time)
     notes = db.Column(db.Text)
     rating = db.Column(db.Integer)
+    visible_to = db.Column(db.Text, nullable=True)  # JSON array of friend IDs, null = visible to all friends
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -199,6 +200,22 @@ class Show(db.Model):
             data['comments'] = [comment.to_dict() for comment in self.comments.filter(Comment.photo_id.is_(None))]
 
         return data
+
+    def get_visible_to_ids(self):
+        """Return set of friend IDs this show is visible to, or None (= all friends)."""
+        if self.visible_to is None:
+            return None
+        try:
+            return set(json.loads(self.visible_to))
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def set_visible_to(self, friend_ids):
+        """Set selective visibility list. None = visible to all friends."""
+        if friend_ids is None:
+            self.visible_to = None
+        else:
+            self.visible_to = json.dumps([int(fid) for fid in friend_ids])
 
 class Photo(db.Model):
     """Photo model"""
@@ -492,6 +509,47 @@ class ChatMessage(db.Model):
             'user': self.sender.to_dict() if self.sender else None,
             'message': self.message,
             'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class Notification(db.Model):
+    """Notification model for in-app notifications"""
+    __tablename__ = 'notifications'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    from_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    type = db.Column(db.String(50), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    data = db.Column(db.Text)  # JSON string
+    read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    recipient = db.relationship('User', foreign_keys=[user_id], backref='notifications_received')
+    sender = db.relationship('User', foreign_keys=[from_user_id])
+
+    def get_data(self):
+        if self.data:
+            try:
+                return json.loads(self.data)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return {}
+
+    def set_data(self, value):
+        self.data = json.dumps(value) if value else None
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'from_user_id': self.from_user_id,
+            'from_user': {'id': self.sender.id, 'username': self.sender.username} if self.sender else None,
+            'type': self.type,
+            'message': self.message,
+            'data': self.get_data(),
+            'read': self.read,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 
 

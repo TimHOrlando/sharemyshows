@@ -11,7 +11,7 @@ from datetime import datetime, date
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
-from app.models import db, Show, Artist, Venue, SetlistSong, ShowCheckin, User, Photo, AudioRecording, VideoRecording, Comment, get_friend_ids
+from app.models import db, Show, Artist, Venue, SetlistSong, ShowCheckin, User, Photo, AudioRecording, VideoRecording, Comment, Notification, get_friend_ids
 from app.utils.concert_archives import fetch_setlist_from_concert_archives
 
 
@@ -250,7 +250,11 @@ class ShowList(Resource):
             notes=data.get('notes', ''),
             rating=data.get('rating')
         )
-        
+
+        # Set visibility if provided
+        if 'visible_to' in data:
+            show.set_visible_to(data['visible_to'])
+
         db.session.add(show)
         db.session.commit()
 
@@ -287,15 +291,63 @@ class ShowFeed(Resource):
         total = query.count()
         shows = query.offset((page - 1) * per_page).limit(per_page).all()
 
-        show_ids = [s.id for s in shows]
+        # Filter out shows where visible_to is set and current user is NOT in the list
+        visible_shows = []
+        for s in shows:
+            vto = s.get_visible_to_ids()
+            if vto is not None and current_user_id not in vto:
+                continue
+            # Also hide shows from users who are appearing offline
+            owner = User.query.get(s.user_id)
+            if owner and getattr(owner, 'appear_offline', False):
+                continue
+            visible_shows.append(s)
+
+        show_ids = [s.id for s in visible_shows]
         counts_map = _batch_counts(show_ids)
 
         return {
-            'shows': [s.to_dict(viewer_id=current_user_id, counts=counts_map.get(s.id)) for s in shows],
-            'total': total,
+            'shows': [s.to_dict(viewer_id=current_user_id, counts=counts_map.get(s.id)) for s in visible_shows],
+            'total': len(visible_shows),
             'page': page,
-            'pages': (total + per_page - 1) // per_page
+            'pages': (len(visible_shows) + per_page - 1) // per_page if visible_shows else 0
         }
+
+
+@api.route('/<int:show_id>/visibility')
+class ShowVisibility(Resource):
+    @api.doc('update_show_visibility', security='jwt')
+    @jwt_required()
+    def put(self, show_id):
+        """Update who can see this show. Pass visible_to: null for all friends, or a list of friend IDs."""
+        current_user_id = int(get_jwt_identity())
+        show = Show.query.get_or_404(show_id)
+
+        if show.user_id != current_user_id:
+            return {'error': 'Not authorized'}, 403
+
+        data = request.get_json()
+        show.set_visible_to(data.get('visible_to'))
+        db.session.commit()
+
+        vto = show.get_visible_to_ids()
+        return {
+            'message': 'Visibility updated',
+            'visible_to': list(vto) if vto is not None else None
+        }
+
+    @api.doc('get_show_visibility', security='jwt')
+    @jwt_required()
+    def get(self, show_id):
+        """Get current visibility settings for a show"""
+        current_user_id = int(get_jwt_identity())
+        show = Show.query.get_or_404(show_id)
+
+        if show.user_id != current_user_id:
+            return {'error': 'Not authorized'}, 403
+
+        vto = show.get_visible_to_ids()
+        return {'visible_to': list(vto) if vto is not None else None}
 
 
 @api.route('/<int:show_id>')
@@ -313,7 +365,33 @@ class ShowDetail(Resource):
             if current_user_id not in friend_ids:
                 return {'error': 'Not authorized to view this show'}, 403
 
-        return show.to_dict(include_details=True, viewer_id=current_user_id)
+            # Check visible_to: if set and viewer not in list, deny access
+            vto = show.get_visible_to_ids()
+            if vto is not None and current_user_id not in vto:
+                return {'error': 'Not authorized to view this show'}, 403
+
+        # Pre-fetch all related data efficiently (6 queries instead of 10+N)
+        songs = SetlistSong.query.filter_by(show_id=show_id).order_by(SetlistSong.order).all()
+        photos = Photo.query.filter_by(show_id=show_id).all()
+        audio = AudioRecording.query.filter_by(show_id=show_id).all()
+        videos = VideoRecording.query.filter_by(show_id=show_id).all()
+        show_comments = Comment.query.filter_by(show_id=show_id).filter(
+            Comment.photo_id.is_(None)
+        ).options(joinedload(Comment.user)).all()
+
+        # Build response with pre-computed counts (no extra count queries)
+        data = show.to_dict(
+            include_details=False,
+            viewer_id=current_user_id,
+            counts=(len(photos), len(audio), len(videos), len(show_comments), len(songs))
+        )
+        data['setlist'] = [s.to_dict() for s in songs]
+        data['photos'] = [p.to_dict() for p in photos]
+        data['audio'] = [a.to_dict() for a in audio]
+        data['videos'] = [v.to_dict() for v in videos]
+        data['comments'] = [c.to_dict() for c in show_comments]
+
+        return data
     
     @api.doc('update_show', security='jwt')
     @api.expect(show_update_model)
@@ -817,7 +895,9 @@ class ShowPresence(Resource):
         # Get active checkins with location across all sibling shows
         checkins = ShowCheckin.query.filter(
             ShowCheckin.show_id.in_(sibling_show_ids),
-            ShowCheckin.is_active == True
+            ShowCheckin.is_active == True,
+            ShowCheckin.latitude.isnot(None),
+            ShowCheckin.longitude.isnot(None)
         ).all()
         
         # Get current user's friends for friend status
@@ -837,20 +917,24 @@ class ShowPresence(Resource):
         users = []
         for checkin in checkins:
             if checkin.user_id != current_user_id:
+                checkin_user = checkin.user or User.query.get(checkin.user_id)
+                if not checkin_user:
+                    continue
+                # Respect share_with filtering
+                if checkin.user_id in friend_ids:
+                    share_ids = checkin.get_share_with_ids()
+                    if share_ids is not None and current_user_id not in share_ids:
+                        continue
                 user_data = {
                     'id': checkin.user_id,
-                    'username': checkin.user.username if checkin.user else 'Unknown',
+                    'username': checkin_user.username,
                     'is_friend': checkin.user_id in friend_ids,
-                    'last_seen': checkin.last_location_update.isoformat() if checkin.last_location_update else checkin.checked_in_at.isoformat()
+                    'last_seen': checkin.last_location_update.isoformat() if checkin.last_location_update else checkin.checked_in_at.isoformat(),
+                    'latitude': checkin.latitude,
+                    'longitude': checkin.longitude,
                 }
-                # Include coordinates for friends (only if viewer is in sharer's share_with list)
-                if checkin.user_id in friend_ids and checkin.latitude is not None:
-                    share_ids = checkin.get_share_with_ids()
-                    if share_ids is None or current_user_id in share_ids:
-                        user_data['latitude'] = checkin.latitude
-                        user_data['longitude'] = checkin.longitude
                 users.append(user_data)
-        
+
         return {'users': users}
     
     @api.doc('update_presence', security='jwt')
@@ -864,12 +948,17 @@ class ShowPresence(Resource):
         latitude = data.get('latitude')
         longitude = data.get('longitude')
         
-        # Find or create checkin
+        # Find active checkin first, then fall back to any checkin (to reactivate)
         checkin = ShowCheckin.query.filter_by(
             user_id=current_user_id,
-            show_id=show_id
+            show_id=show_id,
+            is_active=True
         ).first()
-        
+        if not checkin:
+            checkin = ShowCheckin.query.filter_by(
+                user_id=current_user_id,
+                show_id=show_id
+            ).first()
         if not checkin:
             checkin = ShowCheckin(
                 user_id=current_user_id,
@@ -878,6 +967,8 @@ class ShowPresence(Resource):
             )
             db.session.add(checkin)
         
+        # Explicitly sharing location overrides appear_offline —
+        # the user clicked "Share My Location" which is an active choice.
         checkin.latitude = latitude
         checkin.longitude = longitude
         checkin.last_location_update = datetime.utcnow()
@@ -951,6 +1042,202 @@ class ShowShareWith(Resource):
 
         share_ids = checkin.get_share_with_ids()
         return {'share_with': list(share_ids) if share_ids is not None else None}
+
+
+@api.route('/<int:show_id>/friends-going')
+class FriendsGoing(Resource):
+    @api.doc('get_friends_going', security='jwt')
+    @jwt_required()
+    def get(self, show_id):
+        """Get friends who have the same show (same artist/venue/date) with presence status"""
+        from app.socket_events import online_users
+
+        current_user_id = int(get_jwt_identity())
+        show = Show.query.get_or_404(show_id)
+        friend_ids = get_friend_ids(current_user_id)
+
+        if not friend_ids:
+            return {'friends': []}
+
+        # Find friends who have a show with same artist, venue, date
+        friend_shows = Show.query.filter(
+            Show.artist_id == show.artist_id,
+            Show.venue_id == show.venue_id,
+            Show.date == show.date,
+            Show.user_id.in_(friend_ids)
+        ).all()
+
+        # Collect sibling show IDs once for location lookups
+        sibling_show_ids = [s.id for s in Show.query.filter_by(
+            artist_id=show.artist_id,
+            venue_id=show.venue_id,
+            date=show.date,
+        ).with_entities(Show.id).all()]
+
+        friends = []
+        seen = set()
+        for fs in friend_shows:
+            if fs.user_id in seen:
+                continue
+            seen.add(fs.user_id)
+            user = User.query.get(fs.user_id)
+            if not user:
+                continue
+
+            # Skip if this friend's show has visible_to set and we're not in the list
+            vto = fs.get_visible_to_ids()
+            if vto is not None and current_user_id not in vto:
+                continue
+
+            is_online = fs.user_id in online_users and len(online_users[fs.user_id]) > 0
+            appear_offline = getattr(user, 'appear_offline', False)
+
+            # Check if this friend is actively sharing location
+            is_sharing = False
+            lat = None
+            lng = None
+            checkin = ShowCheckin.query.filter(
+                ShowCheckin.user_id == fs.user_id,
+                ShowCheckin.is_active == True,
+                ShowCheckin.latitude.isnot(None),
+                ShowCheckin.longitude.isnot(None),
+                ShowCheckin.show_id.in_(sibling_show_ids),
+            ).first()
+            if checkin:
+                share_ids = checkin.get_share_with_ids()
+                if share_ids is None or current_user_id in share_ids:
+                    is_sharing = True
+                    lat = checkin.latitude
+                    lng = checkin.longitude
+
+            # Skip appear_offline users unless they're actively sharing location
+            # (explicit "Share My Location" overrides passive offline status)
+            if appear_offline and not is_sharing:
+                continue
+
+            # Actively sharing location implies online at this show,
+            # even if appear_offline keeps them out of the global online_users dict
+            status = 'online' if (is_online or is_sharing) else 'offline'
+
+            friends.append({
+                'id': user.id,
+                'username': user.username,
+                'status': status,
+                'is_sharing_location': is_sharing,
+                'latitude': lat,
+                'longitude': lng,
+                'show_id': fs.id,
+            })
+
+        return {'friends': friends}
+
+
+@api.route('/<int:show_id>/friends-at-show')
+class FriendsAtShow(Resource):
+    @api.doc('get_friends_at_show', security='jwt')
+    @jwt_required()
+    def get(self, show_id):
+        """Get friends who are going to this show (same artist/venue/date) for share picker"""
+        current_user_id = int(get_jwt_identity())
+        show = Show.query.get_or_404(show_id)
+        friend_ids = get_friend_ids(current_user_id)
+
+        if not friend_ids:
+            return {'friends': []}
+
+        # Find friends who have a show with same artist, venue, date
+        friend_shows = Show.query.filter(
+            Show.artist_id == show.artist_id,
+            Show.venue_id == show.venue_id,
+            Show.date == show.date,
+            Show.user_id.in_(friend_ids)
+        ).all()
+
+        seen = set()
+        friends = []
+        for fs in friend_shows:
+            if fs.user_id in seen:
+                continue
+            seen.add(fs.user_id)
+            user = User.query.get(fs.user_id)
+            if not user:
+                continue
+
+            # Skip if friend's show has visible_to set and we're not in the list
+            vto = fs.get_visible_to_ids()
+            if vto is not None and current_user_id not in vto:
+                continue
+
+            friends.append({
+                'id': user.id,
+                'username': user.username,
+            })
+
+        return {'friends': friends}
+
+
+@api.route('/<int:show_id>/notify-friends')
+class NotifyFriends(Resource):
+    @api.doc('notify_friends', security='jwt')
+    @jwt_required()
+    def post(self, show_id):
+        """Notify selected friends about this show"""
+        from app.socket_events import user_sids
+        from flask_socketio import emit
+        from app import socketio
+
+        current_user_id = int(get_jwt_identity())
+        show = Show.query.get_or_404(show_id)
+
+        if show.user_id != current_user_id:
+            return {'error': 'You can only notify friends about your own shows'}, 403
+
+        data = request.get_json()
+        friend_ids_requested = data.get('friend_ids', [])
+
+        if not friend_ids_requested:
+            return {'error': 'No friends specified'}, 400
+
+        # Validate all are actual accepted friends
+        actual_friend_ids = get_friend_ids(current_user_id)
+        valid_ids = [fid for fid in friend_ids_requested if fid in actual_friend_ids]
+
+        if not valid_ids:
+            return {'error': 'No valid friends specified'}, 400
+
+        current_user = User.query.get(current_user_id)
+        artist_name = show.artist.name if show.artist else 'Unknown Artist'
+        venue_name = show.venue.name if show.venue else 'Unknown Venue'
+        show_date = show.date.strftime('%b %d, %Y') if show.date else ''
+
+        message = f"{current_user.username} is going to {artist_name} at {venue_name} on {show_date}"
+
+        notifications = []
+        for fid in valid_ids:
+            notif = Notification(
+                user_id=fid,
+                from_user_id=current_user_id,
+                type='show_added',
+                message=message,
+            )
+            notif.set_data({
+                'show_id': show.id,
+                'artist': artist_name,
+                'venue': venue_name,
+                'date': show.date.isoformat() if show.date else None,
+            })
+            db.session.add(notif)
+            notifications.append(notif)
+
+        db.session.commit()
+
+        # Emit socket event to each friend (reaches even appear-offline users)
+        for notif in notifications:
+            if notif.user_id in user_sids:
+                for sid in user_sids[notif.user_id]:
+                    socketio.emit('show_notification', notif.to_dict(), to=sid)
+
+        return {'message': f'Notified {len(valid_ids)} friends', 'notified_count': len(valid_ids)}, 201
 
 
 @api.route('/<int:show_id>/photos')
