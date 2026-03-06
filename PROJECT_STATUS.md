@@ -1,6 +1,6 @@
 # ShareMyShows - Project Status
 
-**Last Updated:** February 28, 2026
+**Last Updated:** March 5, 2026
 
 ---
 
@@ -44,6 +44,8 @@
 - User search by username/email
 - Comments on shows and photos (authorization: owner or accepted friend)
 - Real-time chat per show via WebSocket (persisted to DB, last 50 on join)
+- Show chat UI on Friends Here tab for messaging friends at the same show
+- DM icon on each friend in Friends Here tab to start direct messages
 - Typing indicators
 - Direct messaging between friends (conversations, read receipts, typing indicators)
 
@@ -59,6 +61,7 @@
 - In-app notification system with unread count badge on Navbar bell icon
 - Show-added notifications when friends share a concert
 - Mark individual or all notifications as read
+- Delete individual notification or clear all notifications
 - Real-time socket delivery to online users
 - Mobile-friendly dropdown (fixed positioning on small screens)
 
@@ -93,7 +96,7 @@
 **Infrastructure**
 - 70+ documented API endpoints across 11 namespaces
 - Full Swagger UI at `/api/docs`
-- Flask-SocketIO with eventlet async mode
+- Flask-SocketIO with eventlet async mode (single instance for handlers + emits)
 - SQLite (dev) with Flask-Migrate for schema management
 - Application factory pattern with graceful namespace registration
 
@@ -129,7 +132,7 @@
 - `PasswordRequirements` - Real-time password strength indicator
 
 **Real-time Features**
-- WebSocket connection per show (chat, presence, typing indicators)
+- Global SocketContext for persistent socket connection across all pages (fixes presence tracking)
 - Continuous GPS tracking with `watchPosition` + 20s emit interval
 - Friends Here tab (today's shows only, accepted friends only) with online/offline badges
 - View Friends on Map with Google Maps integration

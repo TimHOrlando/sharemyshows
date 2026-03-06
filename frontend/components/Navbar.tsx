@@ -179,7 +179,7 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
 
   const navLinks = [
     { href: '/dashboard', label: 'Dashboard' },
-    { href: '/shows', label: 'My Shows' },
+    { href: '/shows', label: 'Shows' },
     { href: '/feed', label: 'Feed' },
     { href: '/messages', label: 'Messages', badge: unreadDMs },
     { href: '/friends', label: 'Friends' },
