@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { io, Socket } from 'socket.io-client';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Navbar from '@/components/Navbar';
 import SettingsModal from '@/components/SettingsModal';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSocket } from '@/contexts/SocketContext';
 import { api } from '@/lib/api';
 
 
@@ -30,10 +30,9 @@ interface Friendship {
 export default function FriendsPage() {
   const router = useRouter();
   const { user, refreshUser } = useAuth();
+  const { socket, onlineFriendIds } = useSocket();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'friends' | 'requests' | 'search'>('friends');
-  const [onlineFriendIds, setOnlineFriendIds] = useState<Set<number>>(new Set());
-  const socketRef = useRef<Socket | null>(null);
 
   // Friends list
   const [friends, setFriends] = useState<Friendship[]>([]);
@@ -64,50 +63,17 @@ export default function FriendsPage() {
     }
   }, [activeTab]);
 
-  // Fetch online friend IDs and set up socket for real-time presence
-  useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !user) return;
-
-    // Fetch initial online IDs
-    api.get('/friends/online').then(res => {
-      setOnlineFriendIds(new Set(res.data.online_ids || []));
-    }).catch(() => {});
-
-    const socket = io(
-      process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000',
-      { query: { token }, transports: ['websocket', 'polling'] }
-    );
-    socketRef.current = socket;
-
-    socket.on('friend_online', (data: { user_id: number }) => {
-      setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
-    });
-
-    socket.on('friend_offline', (data: { user_id: number }) => {
-      setOnlineFriendIds(prev => {
-        const next = new Set(prev);
-        next.delete(data.user_id);
-        return next;
-      });
-    });
-
-    return () => {
-      socket.disconnect();
-      socketRef.current = null;
-    };
-  }, [user?.id]);
 
   const toggleAppearOffline = useCallback(async () => {
     const newValue = !user?.appear_offline;
     try {
       await api.put('/auth/profile/appear-offline', { appear_offline: newValue });
-      socketRef.current?.emit('set_appear_offline', { appear_offline: newValue });
+      socket?.emit('set_appear_offline', { appear_offline: newValue });
       await refreshUser();
     } catch (err) {
       console.error('Failed to toggle appear offline:', err);
     }
-  }, [user, refreshUser]);
+  }, [user, refreshUser, socket]);
 
   const fetchFriends = async () => {
     try {

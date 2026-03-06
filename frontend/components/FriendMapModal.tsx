@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleMap, useJsApiLoader, Marker, InfoWindow, DirectionsRenderer } from '@react-google-maps/api';
-import { Socket } from 'socket.io-client';
+import { useSocket } from '@/contexts/SocketContext';
 import { api } from '@/lib/api';
 
 interface FriendLocation {
@@ -17,7 +17,6 @@ interface FriendMapModalProps {
   isOpen: boolean;
   onClose: () => void;
   showId: number;
-  socket: Socket | null;
   userLocation: { lat: number; lng: number } | null;
   venueLocation?: { lat: number; lng: number } | null;
 }
@@ -31,10 +30,10 @@ export default function FriendMapModal({
   isOpen,
   onClose,
   showId,
-  socket,
   userLocation,
   venueLocation,
 }: FriendMapModalProps) {
+  const { socket } = useSocket();
   const [friends, setFriends] = useState<FriendLocation[]>([]);
   const [selectedFriend, setSelectedFriend] = useState<FriendLocation | null>(null);
   const [directions, setDirections] = useState<google.maps.DirectionsResult | null>(null);

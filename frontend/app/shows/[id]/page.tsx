@@ -8,7 +8,8 @@ import SettingsModal from '@/components/SettingsModal';
 import FriendMapModal from '@/components/FriendMapModal';
 import LocationSharePickerModal from '@/components/LocationSharePickerModal';
 import { api } from '@/lib/api';
-import { io, Socket } from 'socket.io-client';
+import { useSocket } from '@/contexts/SocketContext';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface Song {
   id?: number;
@@ -162,6 +163,14 @@ export default function ShowDetailPage() {
   const [, setLocationEnabled] = useState(false);
   const [sharingLocation, setSharingLocation] = useState(false);
 
+  // Show chat state
+  const [chatMessages, setChatMessages] = useState<Array<{ id: number; user_id: number; username: string; message: string; created_at: string }>>([]);
+  const [chatDraft, setChatDraft] = useState('');
+  const [chatTypingUser, setChatTypingUser] = useState<string | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const chatTypingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastChatTypingEmit = useRef(0);
+
   // Friend map state
   const [friendMapOpen, setFriendMapOpen] = useState(false);
   // Share picker state
@@ -172,8 +181,6 @@ export default function ShowDetailPage() {
   const watchIdRef = useRef<number | null>(null);
   const locationEmitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Online presence for Friends Here (used by socket handlers)
-  const [, setOnlineFriendIds] = useState<Set<number>>(new Set());
 
   // Keep shareWithIdsRef in sync with state so interval closures see current value
   useEffect(() => {
@@ -190,8 +197,9 @@ export default function ShowDetailPage() {
     toastTimerRef.current = setTimeout(() => setToast(null), 3000);
   };
 
-  // WebSocket
-  const socketRef = useRef<Socket | null>(null);
+  // Auth + WebSocket
+  const { user: currentUser } = useAuth();
+  const { socket: globalSocket } = useSocket();
 
   useEffect(() => {
     if (showId) {
@@ -206,39 +214,36 @@ export default function ShowDetailPage() {
     }
   }, [showId]);
 
-  // WebSocket connection
+  // Show-room socket events via global socket
   useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !showId) return;
+    if (!globalSocket || !showId) return;
 
-    const socket = io(process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000', {
-      query: { token },
-      transports: ['websocket', 'polling'],
-    });
+    const sid = parseInt(showId);
 
-    socket.on('connect', () => {
-      socket.emit('join_show', { show_id: parseInt(showId) });
-      // Fetch after socket connects so server's online_users is current
-      // and this won't overwrite later socket events
+    // Join show room once socket is connected (or immediately if already connected)
+    const joinShow = () => {
+      globalSocket.emit('join_show', { show_id: sid });
       api.get(`/shows/${showId}/friends-going`).then(res => {
         setFriendsGoing(res.data.friends || []);
       }).catch(() => {});
-    });
+    };
 
-    socket.on('comment_added', (data: { show_id: number; photo_id?: number; comment: Comment }) => {
+    if (globalSocket.connected) {
+      joinShow();
+    }
+    globalSocket.on('connect', joinShow);
+
+    const handleCommentAdded = (data: { show_id: number; photo_id?: number; comment: Comment }) => {
       if (data.photo_id) {
-        // Photo comment - update if that photo modal is open
         if (selectedPhoto && selectedPhoto.id === data.photo_id) {
           setPhotoComments(prev => [...prev, data.comment]);
         }
       } else {
-        // Show comment
         setComments(prev => [...prev, data.comment]);
       }
-    });
+    };
 
-    // Location sharing events - update friendsGoing
-    socket.on('location_update', (data: { user_id: number; username: string; latitude: number; longitude: number }) => {
+    const handleLocationUpdate = (data: { user_id: number; username: string; latitude: number; longitude: number }) => {
       setFriendsGoing(prev => {
         const idx = prev.findIndex(f => f.id === data.user_id);
         if (idx >= 0) {
@@ -246,7 +251,6 @@ export default function ShowDetailPage() {
           next[idx] = { ...next[idx], is_sharing_location: true, latitude: data.latitude, longitude: data.longitude };
           return next;
         }
-        // Friend not in list yet (joined after we loaded) — add them
         return [...prev, {
           id: data.user_id,
           username: data.username,
@@ -257,18 +261,17 @@ export default function ShowDetailPage() {
           show_id: 0,
         }];
       });
-    });
+    };
 
-    socket.on('location_stopped', (data: { user_id: number }) => {
+    const handleLocationStopped = (data: { user_id: number }) => {
       setFriendsGoing(prev => prev.map(f =>
         f.id === data.user_id
           ? { ...f, is_sharing_location: false, latitude: undefined, longitude: undefined }
           : f
       ));
-    });
+    };
 
-    // Initial friends' locations sent on join_show — update sharing status
-    socket.on('friends_locations', (data: { friends: Array<{ user_id: number; username: string; latitude: number; longitude: number }> }) => {
+    const handleFriendsLocations = (data: { friends: Array<{ user_id: number; username: string; latitude: number; longitude: number }> }) => {
       setFriendsGoing(prev => {
         const updated = [...prev];
         for (const f of data.friends) {
@@ -289,52 +292,84 @@ export default function ShowDetailPage() {
         }
         return updated;
       });
-    });
+    };
 
-    // Friend online presence events - update friendsGoing status
-    socket.on('friend_online', (data: { user_id: number }) => {
-      setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
+    const handleFriendOnline = (data: { user_id: number }) => {
       setFriendsGoing(prev => prev.map(f =>
         f.id === data.user_id ? { ...f, status: 'online' as const } : f
       ));
-    });
+    };
 
-    socket.on('friend_offline', (data: { user_id: number }) => {
-      setOnlineFriendIds(prev => {
-        const next = new Set(prev);
-        next.delete(data.user_id);
-        return next;
-      });
+    const handleFriendOffline = (data: { user_id: number }) => {
       setFriendsGoing(prev => prev.map(f =>
         f.id === data.user_id ? { ...f, status: 'offline' as const } : f
       ));
-    });
+    };
 
-    // Appear offline: friend hides from all show lists
-    socket.on('friend_hide_from_show', (data: { user_id: number }) => {
+    const handleFriendHide = (data: { user_id: number }) => {
       setFriendsGoing(prev => prev.filter(f => f.id !== data.user_id));
-    });
+    };
 
-    // Appear online again: refresh friends-going from API
-    socket.on('friend_show_at_show', () => {
+    const handleFriendShowAtShow = () => {
       api.get(`/shows/${showId}/friends-going`).then(res => {
         setFriendsGoing(res.data.friends || []);
       }).catch(() => {});
-    });
+    };
 
-    // Fetch initial online friends
-    api.get('/friends/online').then(res => {
-      setOnlineFriendIds(new Set(res.data.online_ids || []));
-    }).catch(() => {});
+    // Show chat events
+    const handleMessageHistory = (data: { messages: Array<{ id: number; user_id: number; username?: string; user?: { username: string }; message: string; created_at: string }> }) => {
+      setChatMessages(data.messages.map(m => ({
+        id: m.id,
+        user_id: m.user_id,
+        username: m.username || m.user?.username || 'Unknown',
+        message: m.message,
+        created_at: m.created_at,
+      })));
+    };
 
-    socketRef.current = socket;
+    const handleNewMessage = (data: { id: number; user_id: number; username: string; message: string; created_at: string }) => {
+      setChatMessages(prev => {
+        if (prev.some(m => m.id === data.id)) return prev;
+        return [...prev, data];
+      });
+    };
+
+    const handleUserTyping = (data: { username: string; is_typing: boolean }) => {
+      setChatTypingUser(data.is_typing ? data.username : null);
+      if (data.is_typing) {
+        if (chatTypingTimeout.current) clearTimeout(chatTypingTimeout.current);
+        chatTypingTimeout.current = setTimeout(() => setChatTypingUser(null), 3000);
+      }
+    };
+
+    globalSocket.on('comment_added', handleCommentAdded);
+    globalSocket.on('location_update', handleLocationUpdate);
+    globalSocket.on('location_stopped', handleLocationStopped);
+    globalSocket.on('friends_locations', handleFriendsLocations);
+    globalSocket.on('friend_online', handleFriendOnline);
+    globalSocket.on('friend_offline', handleFriendOffline);
+    globalSocket.on('friend_hide_from_show', handleFriendHide);
+    globalSocket.on('friend_show_at_show', handleFriendShowAtShow);
+    globalSocket.on('message_history', handleMessageHistory);
+    globalSocket.on('new_message', handleNewMessage);
+    globalSocket.on('user_typing', handleUserTyping);
 
     return () => {
-      socket.emit('leave_show', { show_id: parseInt(showId) });
-      socket.disconnect();
-      socketRef.current = null;
+      globalSocket.emit('leave_show', { show_id: sid });
+      globalSocket.off('connect', joinShow);
+      globalSocket.off('comment_added', handleCommentAdded);
+      globalSocket.off('location_update', handleLocationUpdate);
+      globalSocket.off('location_stopped', handleLocationStopped);
+      globalSocket.off('friends_locations', handleFriendsLocations);
+      globalSocket.off('friend_online', handleFriendOnline);
+      globalSocket.off('friend_offline', handleFriendOffline);
+      globalSocket.off('friend_hide_from_show', handleFriendHide);
+      globalSocket.off('friend_show_at_show', handleFriendShowAtShow);
+      globalSocket.off('message_history', handleMessageHistory);
+      globalSocket.off('new_message', handleNewMessage);
+      globalSocket.off('user_typing', handleUserTyping);
     };
-  }, [showId]);
+  }, [globalSocket, showId]);
 
   const fetchShow = async () => {
     try {
@@ -488,8 +523,8 @@ export default function ShowDetailPage() {
       setNewPhotoComment('');
 
       // Notify via WebSocket
-      if (socketRef.current) {
-        socketRef.current.emit('new_comment', {
+      if (globalSocket) {
+        globalSocket.emit('new_comment', {
           show_id: parseInt(showId),
           photo_id: selectedPhoto.id,
           comment: response.data,
@@ -512,8 +547,8 @@ export default function ShowDetailPage() {
       setNewComment('');
 
       // Notify via WebSocket
-      if (socketRef.current) {
-        socketRef.current.emit('new_comment', {
+      if (globalSocket) {
+        globalSocket.emit('new_comment', {
           show_id: parseInt(showId),
           comment: response.data,
         });
@@ -583,8 +618,8 @@ export default function ShowDetailPage() {
       });
 
       // Emit location via WebSocket
-      if (socketRef.current) {
-        socketRef.current.emit('update_location', {
+      if (globalSocket) {
+        globalSocket.emit('update_location', {
           show_id: parseInt(showId),
           latitude: initialLoc.lat,
           longitude: initialLoc.lng,
@@ -604,10 +639,10 @@ export default function ShowDetailPage() {
 
       // Emit location every 20 seconds
       const intervalId = setInterval(() => {
-        if (socketRef.current) {
+        if (globalSocket) {
           navigator.geolocation.getCurrentPosition(
             (pos) => {
-              socketRef.current?.emit('update_location', {
+              globalSocket?.emit('update_location', {
                 show_id: parseInt(showId),
                 latitude: pos.coords.latitude,
                 longitude: pos.coords.longitude,
@@ -664,12 +699,42 @@ export default function ShowDetailPage() {
     localStorage.removeItem(`sharing_location_${showId}`);
     localStorage.removeItem(`share_with_${showId}`);
 
-    if (socketRef.current) {
-      socketRef.current.emit('stop_location', { show_id: parseInt(showId) });
+    if (globalSocket) {
+      globalSocket.emit('stop_location', { show_id: parseInt(showId) });
     }
     await api.delete(`/shows/${showId}/presence`);
 
     showToast('Location sharing disabled', 'info');
+  };
+
+  // Show chat functions
+  useEffect(() => {
+    if (chatMessages.length > 0) {
+      chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
+
+  const sendChatMessage = () => {
+    if (!chatDraft.trim() || !globalSocket) return;
+    globalSocket.emit('send_message', {
+      show_id: parseInt(showId),
+      message: chatDraft.trim(),
+    });
+    setChatDraft('');
+  };
+
+  const handleChatInputChange = (val: string) => {
+    setChatDraft(val);
+    if (!globalSocket) return;
+    const now = Date.now();
+    if (now - lastChatTypingEmit.current > 2000) {
+      globalSocket.emit('typing', { show_id: parseInt(showId), is_typing: true });
+      lastChatTypingEmit.current = now;
+    }
+  };
+
+  const handleChatInputBlur = () => {
+    globalSocket?.emit('typing', { show_id: parseInt(showId), is_typing: false });
   };
 
   const toggleLocationSharing = async () => {
@@ -701,8 +766,8 @@ export default function ShowDetailPage() {
     await api.put(`/shows/${showId}/share-with`, { share_with: selectedIds });
 
     // Update via WebSocket
-    if (socketRef.current) {
-      socketRef.current.emit('update_share_with', {
+    if (globalSocket) {
+      globalSocket.emit('update_share_with', {
         show_id: parseInt(showId),
         share_with: selectedIds,
       });
@@ -1006,14 +1071,8 @@ export default function ShowDetailPage() {
 
   const isOwner = show?.is_owner !== false;
 
-  const isToday = (() => {
-    const showDate = show?.date || show?.show_date || '';
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    return showDate === today;
-  })();
   const tabs: ('setlist' | 'photos' | 'videos' | 'comments' | 'people')[] = [
-    'setlist', 'photos', 'videos', 'comments', ...(isToday ? ['people' as const] : [])
+    'setlist', 'photos', 'videos', 'comments', 'people'
   ];
 
   if (loading) {
@@ -1842,6 +1901,15 @@ export default function ShowDetailPage() {
                       <div className="flex-1">
                         <p className="text-primary font-medium">{friend.username}</p>
                       </div>
+                      <button
+                        onClick={() => router.push(`/messages?friend_id=${friend.id}`)}
+                        className="p-2 rounded-full text-secondary hover:text-accent hover:bg-hover transition-colors"
+                        title={`Message ${friend.username}`}
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                      </button>
                       {friend.is_sharing_location ? (
                         <span className="px-3 py-1 text-xs font-medium rounded-full text-green-400 bg-green-500/20">
                           On map
@@ -1881,6 +1949,85 @@ export default function ShowDetailPage() {
                   </button>
                 </div>
               )}
+
+              {/* Show Chat */}
+              <div className="bg-secondary rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-theme flex items-center gap-2">
+                  <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                  <h3 className="font-medium text-primary">Show Chat</h3>
+                  {chatMessages.length > 0 && (
+                    <span className="text-xs text-muted ml-auto">{chatMessages.length} messages</span>
+                  )}
+                </div>
+
+                <div className="h-72 overflow-y-auto px-4 py-3 space-y-3">
+                  {chatMessages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-center">
+                      <svg className="w-10 h-10 text-muted mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                      </svg>
+                      <p className="text-sm text-muted">No messages yet</p>
+                      <p className="text-xs text-muted mt-1">Start chatting with friends at this show</p>
+                    </div>
+                  ) : (
+                    chatMessages.map((msg) => {
+                      const isMe = currentUser?.id === msg.user_id;
+                      return (
+                        <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`max-w-[75%] ${isMe ? 'order-2' : ''}`}>
+                            {!isMe && (
+                              <p className="text-xs text-accent font-medium mb-0.5 px-1">{msg.username}</p>
+                            )}
+                            <div className={`px-3 py-2 rounded-2xl ${
+                              isMe
+                                ? 'bg-accent text-white rounded-br-md'
+                                : 'bg-tertiary text-primary rounded-bl-md'
+                            }`}>
+                              <p className="text-sm leading-relaxed break-words">{msg.message}</p>
+                            </div>
+                            <p className={`text-[10px] text-muted mt-0.5 px-1 ${isMe ? 'text-right' : ''}`}>
+                              {formatTimestamp(msg.created_at)}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                  {chatTypingUser && (
+                    <div className="flex justify-start">
+                      <div className="px-3 py-2 rounded-2xl bg-tertiary rounded-bl-md">
+                        <p className="text-xs text-muted italic">{chatTypingUser} is typing...</p>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+
+                <div className="px-4 py-3 border-t border-theme">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={chatDraft}
+                      onChange={(e) => handleChatInputChange(e.target.value)}
+                      onBlur={handleChatInputBlur}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
+                      placeholder="Send a message..."
+                      className="flex-1 px-4 py-2.5 bg-tertiary text-primary rounded-full border border-theme focus:outline-none focus:ring-2 focus:ring-accent placeholder:text-muted text-sm"
+                    />
+                    <button
+                      onClick={sendChatMessage}
+                      disabled={!chatDraft.trim()}
+                      className="px-4 py-2.5 bg-accent text-white rounded-full hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </main>
@@ -2106,7 +2253,6 @@ export default function ShowDetailPage() {
           isOpen={friendMapOpen}
           onClose={() => setFriendMapOpen(false)}
           showId={parseInt(showId)}
-          socket={socketRef.current}
           userLocation={userLocation}
           venueLocation={
             show.venue?.latitude && show.venue?.longitude

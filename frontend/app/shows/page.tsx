@@ -11,6 +11,7 @@ import { api } from '@/lib/api';
 interface Artist {
   id: number;
   name: string;
+  image_url?: string;
 }
 
 interface Venue {
@@ -324,9 +325,28 @@ function ShowsContent() {
 
                   {/* Card Body */}
                   <div className="p-5">
-                    <h3 className="text-xl font-bold text-primary mb-2">
-                      {show.artist?.name || 'Unknown Artist'}
-                    </h3>
+                    <div className="flex items-center gap-3 mb-2">
+                      {show.artist?.image_url ? (
+                        <img
+                          src={show.artist.image_url}
+                          alt={show.artist.name}
+                          className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+                          onError={(e) => {
+                            const target = e.currentTarget;
+                            target.style.display = 'none';
+                            target.nextElementSibling?.classList.remove('hidden');
+                          }}
+                        />
+                      ) : null}
+                      <div className={`w-10 h-10 rounded-full bg-tertiary flex items-center justify-center flex-shrink-0${show.artist?.image_url ? ' hidden' : ''}`}>
+                        <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                        </svg>
+                      </div>
+                      <h3 className="text-xl font-bold text-primary truncate">
+                        {show.artist?.name || 'Unknown Artist'}
+                      </h3>
+                    </div>
                     
                     <div className="flex items-start gap-2 text-secondary mb-3">
                       <svg className="w-5 h-5 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">

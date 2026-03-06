@@ -3,20 +3,14 @@ WebSocket Integration with Flask-SocketIO
 Handles real-time chat and user presence for shows
 """
 
-from flask_socketio import SocketIO, emit, join_room, leave_room, rooms
+from flask_socketio import emit, join_room, leave_room, rooms
 from flask import request
 from flask_jwt_extended import decode_token
 from app.models import db, ChatMessage, ShowCheckin, User, Show, Conversation, DirectMessage, get_friend_ids
 from datetime import datetime
-import os
 
-# Initialize SocketIO
-socketio = SocketIO(
-    cors_allowed_origins=os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(','),
-    async_mode='eventlet',
-    logger=True,
-    engineio_logger=True
-)
+# Use the single SocketIO instance from the app package
+from app import socketio
 
 # Store active users per show
 # Format: {show_id: {user_id: {'username': str, 'sid': str}}}
@@ -47,12 +41,6 @@ def get_sibling_show_ids(show_id):
         date=show.date
     ).with_entities(Show.id).all()
     return [s.id for s in siblings]
-
-
-def init_socketio(app):
-    """Initialize SocketIO with the Flask app"""
-    socketio.init_app(app)
-    return socketio
 
 
 def get_user_from_token():
@@ -242,11 +230,17 @@ def handle_join_show(data):
     # Check in user to show (optional - tracks presence in database)
     existing_checkin = ShowCheckin.query.filter_by(
         user_id=user.id,
-        show_id=show_id,
-        is_active=True
+        show_id=show_id
     ).first()
-    
-    if not existing_checkin:
+
+    if existing_checkin:
+        # Reactivate if previously checked out
+        if not existing_checkin.is_active:
+            existing_checkin.is_active = True
+            existing_checkin.checked_in_at = datetime.utcnow()
+            existing_checkin.checked_out_at = None
+            db.session.commit()
+    else:
         checkin = ShowCheckin(
             user_id=user.id,
             show_id=show_id

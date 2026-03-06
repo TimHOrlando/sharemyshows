@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSocket } from '@/contexts/SocketContext';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '@/lib/api';
 
@@ -22,6 +23,7 @@ interface NotificationItem {
 
 export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
   const { user, logout } = useAuth();
+  const { socket } = useSocket();
   const router = useRouter();
   const pathname = usePathname();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -54,6 +56,32 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
     const interval = setInterval(fetchUnreadCount, 30000);
     return () => clearInterval(interval);
   }, [user, fetchUnreadCount]);
+
+  // Listen for real-time notifications via global socket
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleShowNotification = (notif: NotificationItem) => {
+      setUnreadNotifications(prev => prev + 1);
+      // Prepend to dropdown if it's already been loaded
+      setNotifications(prev => prev.length > 0 ? [notif, ...prev] : prev);
+    };
+
+    const handleNewDm = () => {
+      // Increment unread DM count (unless user is already on messages page)
+      if (!window.location.pathname.startsWith('/messages')) {
+        setUnreadDMs(prev => prev + 1);
+      }
+    };
+
+    socket.on('show_notification', handleShowNotification);
+    socket.on('new_dm', handleNewDm);
+
+    return () => {
+      socket.off('show_notification', handleShowNotification);
+      socket.off('new_dm', handleNewDm);
+    };
+  }, [socket]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -88,6 +116,30 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
       await api.put('/notifications/mark-read');
       setUnreadNotifications(0);
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleClearAll = async () => {
+    try {
+      await api.delete('/notifications/clear');
+      setNotifications([]);
+      setUnreadNotifications(0);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDeleteNotif = async (e: React.MouseEvent, notifId: number) => {
+    e.stopPropagation();
+    try {
+      await api.delete(`/notifications/${notifId}`);
+      const removed = notifications.find(n => n.id === notifId);
+      setNotifications(prev => prev.filter(n => n.id !== notifId));
+      if (removed && !removed.read) {
+        setUnreadNotifications(prev => Math.max(0, prev - 1));
+      }
     } catch {
       // ignore
     }
@@ -210,14 +262,24 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
                     <div className="fixed left-4 right-4 top-[4.5rem] sm:absolute sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80 bg-secondary border border-theme rounded-xl shadow-lg overflow-hidden z-50">
                       <div className="px-4 py-3 border-b border-theme flex items-center justify-between">
                         <h3 className="font-medium text-primary text-sm">Notifications</h3>
-                        {unreadNotifications > 0 && (
-                          <button
-                            onClick={handleMarkAllRead}
-                            className="text-xs text-accent hover:underline"
-                          >
-                            Mark all read
-                          </button>
-                        )}
+                        <div className="flex items-center gap-3">
+                          {unreadNotifications > 0 && (
+                            <button
+                              onClick={handleMarkAllRead}
+                              className="text-xs text-accent hover:underline"
+                            >
+                              Mark all read
+                            </button>
+                          )}
+                          {notifications.length > 0 && (
+                            <button
+                              onClick={handleClearAll}
+                              className="text-xs text-red-400 hover:underline"
+                            >
+                              Clear all
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <div className="max-h-80 overflow-y-auto">
                         {loadingNotifs ? (
@@ -243,9 +305,20 @@ export default function Navbar({ onOpenSettings }: NavbarProps = {}) {
                                   <p className="text-sm text-primary leading-snug">{notif.message}</p>
                                   <p className="text-xs text-muted mt-1">{formatTimeAgo(notif.created_at)}</p>
                                 </div>
-                                {!notif.read && (
-                                  <span className="w-2 h-2 rounded-full bg-accent flex-shrink-0 mt-2" />
-                                )}
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  {!notif.read && (
+                                    <span className="w-2 h-2 rounded-full bg-accent mt-0.5" />
+                                  )}
+                                  <button
+                                    onClick={(e) => handleDeleteNotif(e, notif.id)}
+                                    className="p-1 rounded-full text-muted hover:text-red-400 hover:bg-hover transition-colors"
+                                    title="Remove notification"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </div>
                               </div>
                             </button>
                           ))

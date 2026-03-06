@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { io, Socket } from 'socket.io-client';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Navbar from '@/components/Navbar';
 import SettingsModal from '@/components/SettingsModal';
 import { useAuth } from '@/contexts/AuthContext';
+import { useSocket } from '@/contexts/SocketContext';
 import { api } from '@/lib/api';
 
 interface UserBrief {
@@ -35,6 +35,7 @@ interface Conversation {
 
 export default function MessagesPage() {
   const { user } = useAuth();
+  const { socket: globalSocket, onlineFriendIds } = useSocket();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -53,14 +54,10 @@ export default function MessagesPage() {
   const typingTimeout = useRef<NodeJS.Timeout | null>(null);
   const lastTypingEmit = useRef(0);
 
-  // Online presence
-  const [onlineFriendIds, setOnlineFriendIds] = useState<Set<number>>(new Set());
-
   // Mobile state
   const [showThread, setShowThread] = useState(false);
 
   // Refs
-  const socketRef = useRef<Socket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -115,11 +112,11 @@ export default function MessagesPage() {
         prev.map(c => c.id === convId ? { ...c, unread_count: 0 } : c)
       );
       // Also tell the other user via socket
-      socketRef.current?.emit('dm_read', { conversation_id: convId });
+      globalSocket?.emit('dm_read', { conversation_id: convId });
     } catch {
       // ignore
     }
-  }, []);
+  }, [globalSocket]);
 
   // ── Select a conversation ──
   const selectConversation = useCallback((convId: number) => {
@@ -165,32 +162,13 @@ export default function MessagesPage() {
     if (user) fetchConversations();
   }, [user, fetchConversations]);
 
-  // ── Fetch initial online friends ──
+  // ── DM socket events via global socket ──
   useEffect(() => {
-    if (!user) return;
-    api.get('/friends/online').then(res => {
-      setOnlineFriendIds(new Set(res.data.online_ids || []));
-    }).catch(() => {});
-  }, [user]);
+    if (!globalSocket || !user) return;
 
-  // ── Socket connection ──
-  useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (!token || !user) return;
+    globalSocket.emit('join_dm');
 
-    const socket = io(
-      process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000',
-      { query: { token }, transports: ['websocket', 'polling'] }
-    );
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      socket.emit('join_dm');
-    });
-
-    socket.on('new_dm', (msg: DirectMessage) => {
-      // This is a message from the OTHER user (our own messages are added via REST response)
-      // Append to messages if viewing this conversation
+    const handleNewDm = (msg: DirectMessage) => {
       setMessages(prev => {
         if (prev.some(m => m.id === msg.id)) return prev;
         if (activeConvIdRef.current === msg.conversation_id) {
@@ -199,11 +177,9 @@ export default function MessagesPage() {
         return prev;
       });
 
-      // Update conversation list with new last_message and bump unread
       setConversations(prev => {
         const exists = prev.some(c => c.id === msg.conversation_id);
         if (!exists) {
-          // New conversation we don't have yet — refetch the list
           fetchConversations();
           return prev;
         }
@@ -221,34 +197,20 @@ export default function MessagesPage() {
         return updated;
       });
 
-      // Auto-mark read if we're viewing this conversation
       if (activeConvIdRef.current === msg.conversation_id) {
-        socketRef.current?.emit('dm_read', { conversation_id: msg.conversation_id });
+        globalSocket.emit('dm_read', { conversation_id: msg.conversation_id });
       }
-    });
+    };
 
-    socket.on('dm_user_typing', (data: { conversation_id: number; username: string; is_typing: boolean }) => {
+    const handleDmTyping = (data: { conversation_id: number; username: string; is_typing: boolean }) => {
       setTypingUser(data.is_typing ? data.username : null);
-      // Clear typing after 3s
       if (data.is_typing) {
         if (typingTimeout.current) clearTimeout(typingTimeout.current);
         typingTimeout.current = setTimeout(() => setTypingUser(null), 3000);
       }
-    });
+    };
 
-    socket.on('friend_online', (data: { user_id: number }) => {
-      setOnlineFriendIds(prev => new Set(prev).add(data.user_id));
-    });
-
-    socket.on('friend_offline', (data: { user_id: number }) => {
-      setOnlineFriendIds(prev => {
-        const next = new Set(prev);
-        next.delete(data.user_id);
-        return next;
-      });
-    });
-
-    socket.on('dm_messages_read', (data: { conversation_id: number; read_at: string }) => {
+    const handleDmRead = (data: { conversation_id: number; read_at: string }) => {
       setMessages(prev =>
         prev.map(m =>
           m.conversation_id === data.conversation_id && !m.read_at
@@ -256,14 +218,19 @@ export default function MessagesPage() {
             : m
         )
       );
-    });
+    };
+
+    globalSocket.on('new_dm', handleNewDm);
+    globalSocket.on('dm_user_typing', handleDmTyping);
+    globalSocket.on('dm_messages_read', handleDmRead);
 
     return () => {
-      socket.emit('leave_dm');
-      socket.disconnect();
-      socketRef.current = null;
+      globalSocket.emit('leave_dm');
+      globalSocket.off('new_dm', handleNewDm);
+      globalSocket.off('dm_user_typing', handleDmTyping);
+      globalSocket.off('dm_messages_read', handleDmRead);
     };
-  }, [user]);
+  }, [globalSocket, user]);
 
   // ── Auto-scroll to bottom on new messages ──
   useEffect(() => {
@@ -310,7 +277,7 @@ export default function MessagesPage() {
       });
 
       // Also emit via socket so the OTHER user gets it in real-time
-      socketRef.current?.emit('notify_dm', {
+      globalSocket?.emit('notify_dm', {
         conversation_id: activeConvId,
         message: msg,
       });
@@ -325,18 +292,18 @@ export default function MessagesPage() {
   // ── Typing indicator ──
   const handleInputChange = (val: string) => {
     setDraft(val);
-    if (!activeConvId || !socketRef.current) return;
+    if (!activeConvId || !globalSocket) return;
 
     const now = Date.now();
     if (now - lastTypingEmit.current > 2000) {
-      socketRef.current.emit('dm_typing', { conversation_id: activeConvId, is_typing: true });
+      globalSocket.emit('dm_typing', { conversation_id: activeConvId, is_typing: true });
       lastTypingEmit.current = now;
     }
   };
 
   const handleInputBlur = () => {
-    if (activeConvId && socketRef.current) {
-      socketRef.current.emit('dm_typing', { conversation_id: activeConvId, is_typing: false });
+    if (activeConvId && globalSocket) {
+      globalSocket.emit('dm_typing', { conversation_id: activeConvId, is_typing: false });
     }
   };
 

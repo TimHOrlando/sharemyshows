@@ -43,7 +43,9 @@ api = Namespace('shows', description='Show management operations')
 artist_model = api.model('Artist', {
     'id': fields.Integer(description='Artist ID'),
     'name': fields.String(description='Artist name'),
-    'musicbrainz_id': fields.String(description='MusicBrainz ID')
+    'musicbrainz_id': fields.String(description='MusicBrainz ID'),
+    'mbid': fields.String(description='MusicBrainz ID'),
+    'image_url': fields.String(description='Artist thumbnail image URL'),
 })
 
 venue_model = api.model('Venue', {

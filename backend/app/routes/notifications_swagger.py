@@ -80,3 +80,35 @@ class MarkOneRead(Resource):
         notification.read = True
         db.session.commit()
         return notification.to_dict()
+
+
+@api.route('/<int:notification_id>')
+class NotificationDelete(Resource):
+    @api.doc('delete_notification', security='jwt')
+    @jwt_required()
+    def delete(self, notification_id):
+        """Delete a single notification"""
+        current_user_id = int(get_jwt_identity())
+        notification = Notification.query.filter_by(
+            id=notification_id,
+            user_id=current_user_id
+        ).first()
+
+        if not notification:
+            return {'error': 'Notification not found'}, 404
+
+        db.session.delete(notification)
+        db.session.commit()
+        return {'message': 'Notification deleted'}
+
+
+@api.route('/clear')
+class ClearAll(Resource):
+    @api.doc('clear_all_notifications', security='jwt')
+    @jwt_required()
+    def delete(self):
+        """Delete all notifications for current user"""
+        current_user_id = int(get_jwt_identity())
+        count = Notification.query.filter_by(user_id=current_user_id).delete()
+        db.session.commit()
+        return {'message': f'{count} notifications cleared'}
